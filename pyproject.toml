@@ -1,0 +1,26 @@
+[project]
+name = "netadmin-agent"
+version = "0.1.0"
+description = "A safe network administrator assistant for read-only diagnostics."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "google-genai>=1.14.0",
+  "openai>=2.0.0",
+  "paramiko>=3.4.0",
+  "python-dotenv>=1.0.1",
+  "rich>=14.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", ".."]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
