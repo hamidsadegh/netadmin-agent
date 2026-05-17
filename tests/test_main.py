@@ -16,6 +16,7 @@ from main import (
     setup_interactive_history,
 )
 from agent.cli import app as cli_app
+from agent.skills.cisco.common import display_interface_name
 from agent.cli import history as cli_history
 from agent.cli import status as cli_status
 
@@ -389,13 +390,120 @@ def test_format_interface_down_playbook_is_human_friendly_without_json():
     assert "Recommendations:" in text
 
 
+def test_format_interface_check_playbook_is_human_friendly_without_json():
+    text = format_playbook_result(
+        {
+            "skill": "cisco_interface_check_playbook",
+            "host": "127.0.0.1",
+            "user": "admin",
+            "platform_key": "cisco_ios_xe",
+            "interface": "Te1/1/2",
+            "matches": {
+                "interfaces": [{"port": "Te1/1/2", "status": "connected", "vlan": "trunk"}],
+                "ip_interfaces": [{"interface": "Te1/1/2", "status": "up", "protocol": "up"}],
+                "neighbors": [{"device_id": "device.example.local", "remote_port": "TwentyFiveGigE2/0/1"}],
+                "mac_table": [],
+            },
+        }
+    )
+
+    assert "Troubleshooting: Te1/1/2" in text
+    assert "- Assessment: interface is not down" in text
+    assert "- Switchport: Te1/1/2: connected VLAN trunk" in text
+    assert "- device.example.local via Tw2/0/1" in text
+    assert "Matches:" not in text
+    assert '"neighbors"' not in text
+
+
+def test_format_interface_mac_table_playbook_filters_output_without_raw_table():
+    text = format_playbook_result(
+        {
+            "skill": "cisco_interface_mac_table_playbook",
+            "host": "127.0.0.1",
+            "user": "admin",
+            "platform_key": "cisco_ios_xe",
+            "interface": "GigabitEthernet1/0/6",
+            "matches": [
+                {"mac": "0011.2233.4455", "vlan": "10", "type": "DYNAMIC", "port": "GigabitEthernet1/0/6"}
+            ],
+        }
+    )
+
+    assert "MAC Table: Gi1/0/6" in text
+    assert "- Entries: 1" in text
+    assert "- VLAN 10 0011.2233.4455 DYNAMIC on Gi1/0/6" in text
+    assert "Output:" not in text
+    assert "Mac Address Table" not in text
+
+
+def test_display_interface_name_shortens_common_cisco_names():
+    assert display_interface_name("GigabitEthernet1/0/1") == "Gi1/0/1"
+    assert display_interface_name("TenGigabitEthernet1/1/1") == "Te1/1/1"
+    assert display_interface_name("TwentyFiveGigE1/1/1") == "Tw1/1/1"
+    assert display_interface_name("FortyGigabitEthernet1/1/1") == "Fo1/1/1"
+    assert display_interface_name("HundredGigE1/1/1") == "Hu1/1/1"
+
+
+def test_format_interface_down_playbook_reports_not_down_when_link_is_healthy():
+    text = format_playbook_result(
+        {
+            "skill": "cisco_interface_down_playbook",
+            "host": "127.0.0.1",
+            "user": "admin",
+            "platform_key": "cisco_ios_xe",
+            "interface": "Gi1/0/1",
+            "interface_is_down": False,
+            "matches": {
+                "interfaces": [{"port": "Gi1/0/1", "status": "connected", "vlan": "68"}],
+                "ip_interfaces": [{"interface": "GigabitEthernet1/0/1", "status": "up", "protocol": "up"}],
+                "neighbors": [],
+                "mac_table": [{"port": "Gi1/0/1", "mac": "0011.2233.4455"}],
+            },
+            "log_matches": [],
+            "possible_reasons": ["current evidence does not show the interface is down"],
+            "recommendations": ["Treat this as not currently down."],
+        }
+    )
+
+    assert "- Assessment: interface is not down" in text
+    assert "current evidence does not show the interface is down" in text
+
+
+def test_format_interface_down_playbook_reports_missing_interface():
+    text = format_playbook_result(
+        {
+            "skill": "cisco_interface_down_playbook",
+            "host": "127.0.0.1",
+            "user": "admin",
+            "platform_key": "cisco_ios_xe",
+            "interface": "Te1/0/1",
+            "interface_found": False,
+            "interface_is_down": False,
+            "matches": {
+                "interfaces": [],
+                "ip_interfaces": [],
+                "neighbors": [],
+                "mac_table": [],
+            },
+            "log_matches": [],
+            "possible_reasons": ["interface was not found in the current device output"],
+            "recommendations": ["Verify the interface name and platform syntax, then list interfaces with show interface status."],
+        }
+    )
+
+    assert "- Assessment: interface is not found" in text
+    assert "interface was not found in the current device output" in text
+
+
 def test_is_session_info_request_matches_helpful_phrases():
     assert is_session_info_request("session info") is True
     assert is_session_info_request("what can you do here?") is True
+    assert is_session_info_request("What I can on this paltform?") is True
+    assert is_session_info_request("examples") is True
     assert is_session_info_request("check 192.168.178.49") is False
 
 
-def test_format_active_session_status_includes_platform_and_intents():
+def test_format_active_session_status_includes_platform_intents_and_examples():
     text = format_active_session_status(
         {
             "host": "10.0.0.10",
@@ -410,6 +518,9 @@ def test_format_active_session_status_includes_platform_and_intents():
     assert "Platform: cisco_ios" in text
     assert "Supported intents:" in text
     assert "interfaces" in text
+    assert "Examples:" in text
+    assert "- troubleshoot interface Gi1/0/1" in text
+    assert "- mac table for int Gi1/0/1" in text
     assert "Fingerprint:" in text
 
 
@@ -472,6 +583,61 @@ def test_run_agent_routes_unparsed_input_to_active_ssh_session(monkeypatch):
     assert calls[0]["user"] == "admin"
     assert calls[0]["request"] == "show run"
     assert outputs[-1] != "Which host should I connect to over SSH? Give me an IP or hostname."
+
+
+def test_print_paged_prompts_for_long_output(monkeypatch):
+    outputs = []
+    writes = []
+    monkeypatch.setattr(cli_app, "print", lambda *args, **kwargs: outputs.append(" ".join(str(a) for a in args)))
+    monkeypatch.setattr(cli_app.shutil, "get_terminal_size", lambda fallback: type("Size", (), {"lines": 8})())
+    monkeypatch.setattr(cli_app, "_read_pager_key", lambda: " ")
+    monkeypatch.setattr(cli_app.sys.stdout, "write", lambda text: writes.append(text))
+    monkeypatch.setattr(cli_app.sys.stdout, "flush", lambda: None)
+
+    cli_app.print_paged("\n".join(f"line {idx}" for idx in range(12)))
+
+    assert len(outputs) == 3
+    assert any("--More-- Enter/Space next page, q quit" in text for text in writes)
+
+
+def test_run_agent_does_not_summarize_direct_ssh_result(monkeypatch):
+    outputs = []
+    cli_app.PENDING_FOLLOW_UP = None
+    cli_app.ACTIVE_SSH_SESSION = None
+
+    def fake_run_with_status(_message, func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    def fake_execute_skill(skill_name, args):
+        assert skill_name == "run_remote_ssh_diagnostic"
+        return {
+            "skill": "run_remote_ssh_diagnostic",
+            "host": args["host"],
+            "port": args["port"],
+            "user": args["user"],
+            "status": "ok",
+            "result": {
+                "command": "hostname",
+                "cleaned_stdout": "iosxe-sim-1",
+                "cleaned_stderr": "",
+            },
+        }
+
+    monkeypatch.setattr(cli_app, "print", lambda *args, **kwargs: outputs.append(" ".join(str(a) for a in args)))
+    monkeypatch.setattr(cli_app, "run_with_status", fake_run_with_status)
+    monkeypatch.setattr(cli_app, "execute_skill", fake_execute_skill)
+    monkeypatch.setattr(cli_app, "connect_ssh_session", lambda *args, **kwargs: {"success": True, "client": object()})
+    monkeypatch.setattr(
+        cli_app,
+        "explain_skill_result",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("summarizer should not run")),
+    )
+
+    cli_app.run_agent("connect to 127.0.0.1:2222 with user admin and pass admin")
+
+    assert outputs
+    assert "SSH ok: admin@127.0.0.1:2222" in outputs[-1]
+    assert "Command: hostname" in outputs[-1]
 
 
 def test_get_skill_status_message_returns_clear_phase_labels():
@@ -621,3 +787,25 @@ def test_maybe_run_cisco_playbook_matches_interface_check(monkeypatch):
     result = maybe_run_cisco_playbook("check interface Te1/1 status")
     assert result["skill"] == "cisco_interface_check_playbook"
     assert result["interface"] == "Te1/1"
+
+
+def test_maybe_run_cisco_playbook_matches_interface_mac_table(monkeypatch):
+    cli_app.ACTIVE_SSH_SESSION = {
+        "client": object(),
+        "host": "10.0.0.10",
+        "user": "admin",
+        "platform_key": "cisco_ios",
+    }
+
+    monkeypatch.setattr(
+        cli_app,
+        "run_cisco_interface_mac_table_playbook",
+        lambda client, host, user, interface_name, platform_key=None: {
+            "skill": "cisco_interface_mac_table_playbook",
+            "interface": interface_name,
+        },
+    )
+
+    result = maybe_run_cisco_playbook("mac table for int Gi1/0/6")
+    assert result["skill"] == "cisco_interface_mac_table_playbook"
+    assert result["interface"] == "Gi1/0/6"

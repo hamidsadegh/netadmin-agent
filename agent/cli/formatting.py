@@ -1,6 +1,44 @@
 import json
 
+from agent.skills.cisco.common import display_interface_name
 from agent.tools import get_supported_intents
+
+
+PLATFORM_EXAMPLES = {
+    "cisco_ios": [
+        "show version",
+        "show interfaces status",
+        "troubleshoot interface Gi1/0/1",
+        "why is Gi1/0/1 down?",
+        "mac table for int Gi1/0/1",
+        "find mac 0011.2233.4455",
+        "check vlan 10",
+        "show neighbors",
+        "show logs",
+    ],
+    "cisco_ios_xe": [
+        "show version",
+        "show interfaces status",
+        "troubleshoot interface Gi1/0/1",
+        "why is Gi1/0/1 down?",
+        "mac table for int Gi1/0/1",
+        "find mac 0011.2233.4455",
+        "check vlan 10",
+        "show neighbors",
+        "show logs",
+    ],
+    "cisco_nxos": [
+        "show version",
+        "show interface status",
+        "troubleshoot interface Eth1/1",
+        "why is Eth1/1 down?",
+        "mac table for int Eth1/1",
+        "find mac 0011.2233.4455",
+        "check vlan 10",
+        "show neighbors",
+        "show logs",
+    ],
+}
 
 
 def format_result_for_fallback(result: dict) -> str:
@@ -145,15 +183,50 @@ def format_result_for_fallback(result: dict) -> str:
 
 
 def format_playbook_result(result: dict) -> str:
-    if result.get("skill") == "cisco_interface_down_playbook":
+    if result.get("skill") == "cisco_interface_mac_table_playbook":
+        interface = display_interface_name(result.get("interface")) or "interface"
+        matches = result.get("matches") or []
+        lines = [
+            f"MAC Table: {interface}",
+            f"Host: {result.get('user')}@{result.get('host')}",
+        ]
+        if result.get("platform_key"):
+            lines.append(f"Platform: {result.get('platform_key')}")
+        lines.extend(["", "Findings:", f"- Entries: {len(matches)}"])
+        if matches:
+            lines.extend(["", "Entries:"])
+            lines.extend(
+                f"- VLAN {entry.get('vlan', 'unknown')} {entry.get('mac', 'unknown')} {entry.get('type', '').strip() or 'dynamic'} on {display_interface_name(entry.get('port')) or interface}"
+                for entry in matches[:10]
+            )
+            if len(matches) > 10:
+                lines.append(f"- ... and {len(matches) - 10} more")
+        else:
+            lines.extend(["", "Entries:", "- No MAC addresses learned on this interface."])
+        return "\n".join(lines)
+
+    if result.get("skill") in {"cisco_interface_check_playbook", "cisco_interface_down_playbook"}:
         matches = result.get("matches") or {}
         interfaces = matches.get("interfaces") or []
         ip_interfaces = matches.get("ip_interfaces") or []
         neighbors = matches.get("neighbors") or []
         mac_table = matches.get("mac_table") or []
-        interface = result.get("interface") or "interface"
+        interface = display_interface_name(result.get("interface")) or "interface"
         sw = interfaces[0] if interfaces else {}
         l3 = ip_interfaces[0] if ip_interfaces else {}
+        interface_found = result.get("interface_found")
+        if interface_found is None:
+            interface_found = bool(interfaces or ip_interfaces)
+        interface_is_down = result.get("interface_is_down")
+        if interface_is_down is None:
+            sw_status = str(sw.get("status", "")).lower()
+            l3_status = str(l3.get("status", "")).lower()
+            l3_protocol = str(l3.get("protocol", "")).lower()
+            interface_is_down = bool(interface_found) and (
+                sw_status in {"notconnect", "down", "inactive", "disabled", "err-disabled"}
+                or (sw_status not in {"connected", "up"} and (l3_status == "down" or l3_protocol == "down"))
+            )
+        assessment = "not found" if not interface_found else ("down" if interface_is_down else "not down")
 
         lines = [
             f"Troubleshooting: {interface}",
@@ -166,28 +239,53 @@ def format_playbook_result(result: dict) -> str:
             [
                 "",
                 "Findings:",
-                f"- Switchport: {sw.get('status', 'not found')} VLAN {sw.get('vlan', 'unknown')}",
-                f"- L3 state: {l3.get('status', 'not found')}/{l3.get('protocol', 'unknown')}",
+                f"- Assessment: interface is {assessment}",
+                f"- Switchport: {display_interface_name(sw.get('port')) or interface}: {sw.get('status', 'not found')} VLAN {sw.get('vlan', 'unknown')}",
+                f"- L3 state: {display_interface_name(l3.get('interface')) or interface}: {l3.get('status', 'not found')}/{l3.get('protocol', 'unknown')}",
                 f"- Neighbors: {len(neighbors)}",
                 f"- MAC entries: {len(mac_table)}",
             ]
         )
 
-        log_matches = result.get("log_matches") or []
-        lines.extend(["", "Logs:"])
-        if log_matches:
-            lines.extend(f"- {line}" for line in log_matches[:3])
-        else:
-            lines.append("- No matching log lines for this interface.")
+        if result.get("skill") == "cisco_interface_down_playbook":
+            log_matches = result.get("log_matches") or []
+            lines.extend(["", "Logs:"])
+            if log_matches:
+                lines.extend(f"- {line}" for line in log_matches[:3])
+            else:
+                lines.append("- No matching log lines for this interface.")
 
         lines.extend(
             [
                 "",
                 "Steps:",
-                "- Checked interface status, L3 state, neighbors, MAC table, and logs.",
-                "- Link is down if status is down/notconnect and no neighbor/MAC is present.",
+                "- Checked interface status, L3 state, neighbors, and MAC table.",
+                "- Down means status is down/notconnect/disabled, or L3 is down with no healthy switchport evidence.",
             ]
         )
+
+        if result.get("skill") == "cisco_interface_check_playbook":
+            if neighbors:
+                neighbor = neighbors[0]
+                lines.extend(
+                    [
+                        "",
+                        "Neighbor:",
+                        f"- {neighbor.get('device_id', 'unknown')} via {display_interface_name(neighbor.get('remote_port')) or 'unknown'}",
+                    ]
+                )
+            if mac_table:
+                lines.extend(
+                    [
+                        "",
+                        "MAC Table:",
+                        *(
+                            f"- {entry.get('mac', 'unknown')} VLAN {entry.get('vlan', 'unknown')} on {display_interface_name(entry.get('port')) or 'unknown'}"
+                            for entry in mac_table[:3]
+                        ),
+                    ]
+                )
+            return "\n".join(lines)
 
         reasons = result.get("possible_reasons") or []
         if reasons:
@@ -225,6 +323,9 @@ def format_active_session_status(session: dict | None) -> str:
     ]
     if supported_intents:
         lines.extend(["", "Supported intents:", ", ".join(supported_intents)])
+    examples = PLATFORM_EXAMPLES.get(platform_key, [])
+    if examples:
+        lines.extend(["", "Examples:", *(f"- {example}" for example in examples)])
     fingerprint = session.get("fingerprint")
     if fingerprint:
         lines.extend(["", "Fingerprint:", fingerprint])

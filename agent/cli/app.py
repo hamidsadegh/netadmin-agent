@@ -1,6 +1,10 @@
 import argparse
 import getpass
 import json
+import shutil
+import sys
+import termios
+import tty
 
 try:
     from rich import print
@@ -15,6 +19,7 @@ from agent.skills import (
     discover_network_hosts,
     run_cisco_interface_check_playbook,
     run_cisco_interface_down_playbook,
+    run_cisco_interface_mac_table_playbook,
     run_cisco_mac_lookup_playbook,
     run_cisco_uplink_health_playbook,
     run_cisco_vlan_check_playbook,
@@ -47,6 +52,46 @@ from .status import get_skill_status_message, run_with_status
 
 ACTIVE_SSH_SESSION = None
 PENDING_FOLLOW_UP = None
+PAGER_MIN_LINES = 12
+
+
+def _read_pager_key() -> str:
+    if not sys.stdin.isatty():
+        try:
+            return input()
+        except EOFError:
+            return "q"
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        return sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+def print_paged(text: str, *, force: bool = False) -> None:
+    lines = str(text).splitlines()
+    terminal_height = shutil.get_terminal_size((80, 24)).lines
+    page_size = max(5, terminal_height - 3)
+    should_page = (force and len(lines) > PAGER_MIN_LINES) or len(lines) > page_size
+    if not should_page:
+        print(text)
+        return
+
+    for start in range(0, len(lines), page_size):
+        chunk = lines[start : start + page_size]
+        print("\n".join(chunk))
+        if start + page_size >= len(lines):
+            break
+        sys.stdout.write("--More-- Enter/Space next page, q quit ")
+        sys.stdout.flush()
+        key = _read_pager_key().lower()
+        sys.stdout.write("\r" + " " * 42 + "\r")
+        sys.stdout.flush()
+        if key == "q":
+            break
 
 
 def get_client():
@@ -156,6 +201,15 @@ def maybe_run_cisco_playbook(user_input: str):
     lowered = user_input.lower()
     interface_match = INTERFACE_PATTERN.search(user_input)
 
+    if interface_match and any(word in lowered for word in ("mac", "mac table", "mac address")):
+        return run_cisco_interface_mac_table_playbook(
+            ACTIVE_SSH_SESSION["client"],
+            host=ACTIVE_SSH_SESSION["host"],
+            user=ACTIVE_SSH_SESSION["user"],
+            interface_name=interface_match.group(0),
+            platform_key=platform_key,
+        )
+
     if interface_match and any(word in lowered for word in ("why", "down", "problem", "issue", "troubleshoot")):
         return run_cisco_interface_down_playbook(
             ACTIVE_SSH_SESSION["client"],
@@ -221,13 +275,13 @@ def run_agent(user_input: str):
         skill_call = parse_direct_skill_request(user_input)
 
     if is_session_info_request(user_input):
-        print(format_active_session_status(ACTIVE_SSH_SESSION))
+        print_paged(format_active_session_status(ACTIVE_SSH_SESSION), force=True)
         return
 
     if not skill_call and ACTIVE_SSH_SESSION:
         playbook_result = maybe_run_cisco_playbook(user_input)
         if playbook_result:
-            print(format_playbook_result(playbook_result))
+            print_paged(format_playbook_result(playbook_result))
             return
         try:
             result = run_with_status(
@@ -240,7 +294,7 @@ def run_agent(user_input: str):
                 request=user_input,
                 platform_key=ACTIVE_SSH_SESSION.get("platform_key"),
             )
-            print(format_result_for_fallback(result))
+            print_paged(format_result_for_fallback(result))
             return
         except UnsupportedIntentError as exc:
             print(str(exc))
@@ -292,11 +346,15 @@ def run_agent(user_input: str):
         if session.get("success"):
             ACTIVE_SSH_SESSION = session
 
+    if skill_name == "run_remote_ssh_diagnostic":
+        print_paged(format_result_for_fallback(result))
+        return
+
     try:
         explanation = run_with_status("Summarizing result...", explain_skill_result, user_input, result)
-        print(explanation)
+        print_paged(explanation)
     except Exception:
-        print(format_result_for_fallback(result))
+        print_paged(format_result_for_fallback(result))
 
 
 def build_parser() -> argparse.ArgumentParser:

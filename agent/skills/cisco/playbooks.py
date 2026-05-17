@@ -1,6 +1,6 @@
 from agent.skills.ssh_diagnostics import run_remote_ssh_diagnostic_on_session
 
-from .common import filter_by_interface, normalize_interface_name
+from .common import display_interface_name, filter_by_interface, normalize_interface_name
 
 
 def _combine_step_statuses(*step_results: dict) -> str:
@@ -22,6 +22,9 @@ def _interface_log_tokens(interface_name: str) -> set[str]:
     expansions = {
         "gi": "gigabitethernet",
         "te": "tengigabitethernet",
+        "tw": "twentyfivegige",
+        "fo": "fortygigabitethernet",
+        "hu": "hundredgige",
         "fa": "fastethernet",
         "eth": "ethernet",
         "po": "port-channel",
@@ -45,7 +48,28 @@ def _filter_logs_for_interface(log_output: str, interface_name: str, limit: int 
     return matches
 
 
-def _possible_interface_down_reasons(status: str, has_neighbors: bool, has_mac_entries: bool) -> list[str]:
+def _is_interface_down(status: str, l3_status: str = "", l3_protocol: str = "") -> bool:
+    status = status.lower()
+    l3_status = l3_status.lower()
+    l3_protocol = l3_protocol.lower()
+    if status in {"connected", "up"}:
+        return False
+    if status in {"notconnect", "down", "inactive", "disabled", "err-disabled", "administratively down"}:
+        return True
+    return l3_status == "down" or l3_protocol == "down"
+
+
+def _possible_interface_down_reasons(
+    status: str,
+    has_neighbors: bool,
+    has_mac_entries: bool,
+    is_down: bool,
+    interface_found: bool = True,
+) -> list[str]:
+    if not interface_found:
+        return ["interface was not found in the current device output"]
+    if not is_down:
+        return ["current evidence does not show the interface is down"]
     status = status.lower()
     if status in {"notconnect", "down"}:
         reasons = ["cable/SFP/patch path disconnected", "endpoint powered off or NIC down"]
@@ -61,7 +85,11 @@ def _possible_interface_down_reasons(status: str, has_neighbors: bool, has_mac_e
     return ["interface state is not healthy; compare physical link, endpoint, and recent logs"]
 
 
-def _interface_down_recommendations(status: str) -> list[str]:
+def _interface_down_recommendations(status: str, is_down: bool, interface_found: bool = True) -> list[str]:
+    if not interface_found:
+        return ["Verify the interface name and platform syntax, then list interfaces with show interface status."]
+    if not is_down:
+        return ["Treat this as not currently down; investigate performance, VLAN, or endpoint symptoms only if users still report impact."]
     status = status.lower()
     if status in {"notconnect", "down"}:
         return [
@@ -110,6 +138,32 @@ def run_cisco_mac_lookup_playbook(client, host: str, user: str, mac: str, platfo
         "matches": matches,
         "steps": {"mac_table": mac_result},
         "summary": f"Found {len(matches)} matching MAC table entries for {mac}.",
+    }
+
+
+def run_cisco_interface_mac_table_playbook(
+    client,
+    host: str,
+    user: str,
+    interface_name: str,
+    platform_key: str | None = None,
+) -> dict:
+    mac_result = run_remote_ssh_diagnostic_on_session(
+        client, host=host, user=user, request="show mac table", platform_key=platform_key
+    )
+    parsed = ((mac_result.get("result") or {}).get("parsed") or {}).get("mac_table", [])
+    matches = filter_by_interface(parsed, "port", interface_name=interface_name)
+    display_name = display_interface_name(interface_name)
+    return {
+        "skill": "cisco_interface_mac_table_playbook",
+        "host": host,
+        "user": user,
+        "platform_key": platform_key,
+        "status": _combine_step_statuses(mac_result),
+        "interface": interface_name,
+        "matches": matches,
+        "steps": {"mac_table": mac_result},
+        "summary": f"Found {len(matches)} MAC table entr{'y' if len(matches) == 1 else 'ies'} on {display_name}.",
     }
 
 
@@ -179,7 +233,8 @@ def run_cisco_interface_check_playbook(
     if ip_entries:
         status_bits.append(f"L3 status {ip_entries[0].get('status')}/{ip_entries[0].get('protocol')}")
     if neighbor_entries:
-        status_bits.append(f"{len(neighbor_entries)} neighbor(s) seen")
+        neighbor_ports = ", ".join(display_interface_name(entry.get("remote_port")) for entry in neighbor_entries[:2])
+        status_bits.append(f"{len(neighbor_entries)} neighbor(s) seen" + (f" via {neighbor_ports}" if neighbor_ports else ""))
     if mac_entries:
         status_bits.append(f"{len(mac_entries)} MAC entry/entries learned")
     summary = (
@@ -261,15 +316,23 @@ def run_cisco_interface_down_playbook(
         observations.append("no related log lines found in current buffer")
 
     status = str((interface_entries[0] if interface_entries else {}).get("status", "unknown"))
+    l3_status = str((ip_entries[0] if ip_entries else {}).get("status", "unknown"))
+    l3_protocol = str((ip_entries[0] if ip_entries else {}).get("protocol", "unknown"))
+    interface_found = bool(interface_entries or ip_entries)
+    is_down = _is_interface_down(status, l3_status, l3_protocol) if interface_found else False
     result["skill"] = "cisco_interface_down_playbook"
+    result["interface_found"] = interface_found
+    result["interface_is_down"] = is_down
     result["observations"] = observations
     result["log_matches"] = log_matches
     result["possible_reasons"] = _possible_interface_down_reasons(
         status,
         has_neighbors=bool(neighbor_entries),
         has_mac_entries=bool(mac_entries),
+        is_down=is_down,
+        interface_found=interface_found,
     )
-    result["recommendations"] = _interface_down_recommendations(status)
+    result["recommendations"] = _interface_down_recommendations(status, is_down, interface_found)
     result.setdefault("steps", {})["logs"] = log_result
     result["status"] = _combine_step_statuses(result, log_result)
     result["summary"] = f"Interface {interface_name} troubleshooting: " + "; ".join(observations) + "."

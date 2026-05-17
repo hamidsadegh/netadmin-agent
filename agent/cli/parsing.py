@@ -28,8 +28,19 @@ SESSION_INFO_HINTS = (
     "where am i connected",
     "what platform",
     "supported intents",
+    "examples",
+    "abilities",
+    "ability",
+    "what can i",
+    "what i can",
+    "what can user",
+    "what ability",
     "what can you do here",
+    "what can you do",
     "what can you do on this host",
+    "what can i do on this platform",
+    "what i can on this platform",
+    "what i can on this paltform",
 )
 RESERVED_HOST_TOKENS = {
     "and",
@@ -71,7 +82,7 @@ RESERVED_FOLLOW_UP_USER_TOKENS = {
 MAC_ADDRESS_PATTERN = re.compile(r"\b[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}\b|\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}\b")
 VLAN_ID_PATTERN = re.compile(r"\bvlan\s+(\d{1,4})\b", re.IGNORECASE)
 INTERFACE_PATTERN = re.compile(
-    r"\b(?:gi(?:gabitethernet)?|te(?:ngigabitethernet)?|fa(?:stethernet)?|eth(?:ernet)?|po(?:rt-channel)?)\s*\d+(?:/\d+)*(?:\.\d+)?\b",
+    r"\b(?:gi(?:gabitethernet)?|gigabitethernet|te(?:ngigabitethernet)?|tengigabitethernet|tw(?:entyfivegige)?|twentyfivegige|twentyfivegigabitethernet|fo(?:rtygige)?|fortygige|fortygigabitethernet|hu(?:ndredgige)?|hundredgige|hundredgigabitethernet|fa(?:stethernet)?|fastethernet|eth(?:ernet)?|ethernet|po(?:rt-channel)?|port-channel|portchannel)\s*\d+(?:/\d+)*(?:\.\d+)?\b",
     re.IGNORECASE,
 )
 

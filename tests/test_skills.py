@@ -102,6 +102,37 @@ def test_run_cisco_uplink_health_playbook_propagates_neighbor_failure(monkeypatc
     assert result["status"] == "ssh_failed"
 
 
+def test_run_cisco_interface_mac_table_playbook_filters_by_interface(monkeypatch):
+    monkeypatch.setattr(
+        playbooks,
+        "run_remote_ssh_diagnostic_on_session",
+        lambda client, host, user, command=None, request=None, platform_key=None: {
+            "skill": "run_remote_ssh_diagnostic",
+            "status": "ok",
+            "result": {
+                "parsed": {
+                    "mac_table": [
+                        {"mac": "0011.2233.4455", "port": "GigabitEthernet1/0/6", "vlan": "10"},
+                        {"mac": "00aa.bbcc.ddee", "port": "Gi1/0/7", "vlan": "20"},
+                    ]
+                }
+            },
+        },
+    )
+
+    result = skills.run_cisco_interface_mac_table_playbook(
+        DummyClient(),
+        host="10.0.0.10",
+        user="admin",
+        interface_name="Gi1/0/6",
+        platform_key="cisco_ios",
+    )
+
+    assert result["skill"] == "cisco_interface_mac_table_playbook"
+    assert result["matches"] == [{"mac": "0011.2233.4455", "port": "GigabitEthernet1/0/6", "vlan": "10"}]
+    assert "Found 1 MAC table entry on Gi1/0/6" in result["summary"]
+
+
 def test_run_cisco_interface_check_playbook_propagates_step_failure(monkeypatch):
     responses = {
         "show interfaces": {
