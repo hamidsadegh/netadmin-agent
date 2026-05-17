@@ -524,6 +524,26 @@ def test_format_active_session_status_includes_platform_intents_and_examples():
     assert "Fingerprint:" in text
 
 
+def test_format_active_session_status_filters_invalid_probe_noise():
+    text = format_active_session_status(
+        {
+            "host": "127.0.0.1",
+            "user": "admin",
+            "platform_key": "cisco_ios_xe",
+            "fingerprint": (
+                "% Invalid input detected for command: cat /etc/os-release\n"
+                "% Invalid input detected for command: uname -a\n"
+                "Cisco IOS XE Software, Version 17.06.06"
+            ),
+        }
+    )
+
+    assert "Invalid input detected" not in text
+    assert "cat /etc/os-release" not in text
+    assert "uname -a" not in text
+    assert "Cisco IOS XE Software, Version 17.06.06" in text
+
+
 def test_build_interactive_prompt_without_session():
     assert build_interactive_prompt(None) == "\nnetadmin-agent> "
 

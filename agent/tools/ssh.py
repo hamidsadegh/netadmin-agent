@@ -78,7 +78,7 @@ def _append_fingerprint_output(combined: list[str], result: dict) -> None:
     stderr_text = result.get("stderr", "")
     if stdout_text.strip():
         combined.append(stdout_text.strip())
-    if stderr_text.strip():
+    if stderr_text.strip() and "invalid input detected" not in stderr_text.lower():
         combined.append(stderr_text.strip())
 
 

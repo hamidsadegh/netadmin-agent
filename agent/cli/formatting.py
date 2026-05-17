@@ -328,7 +328,14 @@ def format_active_session_status(session: dict | None) -> str:
         lines.extend(["", "Examples:", *(f"- {example}" for example in examples)])
     fingerprint = session.get("fingerprint")
     if fingerprint:
-        lines.extend(["", "Fingerprint:", fingerprint])
+        useful_fingerprint = [
+            line
+            for line in str(fingerprint).splitlines()
+            if "invalid input detected" not in line.lower()
+            and not line.strip().lower().startswith(("cat /etc/os-release", "uname -a"))
+        ]
+        if useful_fingerprint:
+            lines.extend(["", "Fingerprint:", "\n".join(useful_fingerprint)])
     return "\n".join(lines)
 
 

@@ -5,11 +5,33 @@ from pathlib import Path
 import pytest
 
 from agent import tools
+from agent.tools.ssh import _append_fingerprint_output
 from agent.skills import scan_host_tcp_ports
 
 
 def test_validate_scan_target_allows_private_subnets():
     assert tools.validate_scan_target("192.168.178.0/24") == "192.168.178.0/24"
+
+
+def test_append_fingerprint_output_ignores_cisco_invalid_command_stderr():
+    combined = []
+
+    _append_fingerprint_output(
+        combined,
+        {
+            "stdout": "",
+            "stderr": "% Invalid input detected for command: cat /etc/os-release",
+        },
+    )
+    _append_fingerprint_output(
+        combined,
+        {
+            "stdout": "Cisco IOS XE Software, Version 17.06.06",
+            "stderr": "",
+        },
+    )
+
+    assert combined == ["Cisco IOS XE Software, Version 17.06.06"]
 
 
 def test_validate_scan_target_rejects_public_subnets():
