@@ -22,6 +22,27 @@ def test_parse_direct_skill_request_subnet_first_ports_uses_requested_range():
     }
 
 
+def test_parse_direct_skill_request_supports_quick_scan_profile():
+    parsed = parse_direct_skill_request("quick scan 192.168.178.0/24")
+    assert parsed == {
+        "skill": "discover_network_hosts",
+        "args": {"cidr": "192.168.178.0/24", "ports": "profile", "scan_profile": "quick"},
+    }
+
+
+def test_parse_direct_skill_request_supports_deep_scan_profile_without_changing_service_detection():
+    parsed = parse_direct_skill_request("deep scan 192.168.178.0/24 with service detection")
+    assert parsed == {
+        "skill": "discover_network_hosts",
+        "args": {
+            "cidr": "192.168.178.0/24",
+            "ports": "profile",
+            "scan_profile": "deep",
+            "service_detection": "safe",
+        },
+    }
+
+
 def test_parse_direct_skill_request_supports_explicit_masscan():
     parsed = parse_direct_skill_request("masscan 192.168.178.0/24 ports 22,80,443")
     assert parsed == {
@@ -60,6 +81,69 @@ def test_discover_network_hosts_uses_nmap_by_default(monkeypatch):
     assert result["ports"] is None
     assert result["checks"]["port_scan"]["skipped"] is True
     assert result["host_count"] == 1
+
+
+def test_discover_network_hosts_resolves_quick_scan_profile_ports(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        "agent.skills.discovery.run_nmap_host_discovery",
+        lambda cidr: {"alive_hosts": [], "success": True, "tool": "run_nmap_host_discovery"},
+    )
+
+    def fake_port_scan(cidr, ports):
+        seen["ports"] = ports
+        return {"findings": [], "success": True, "tool": "run_nmap_ports"}
+
+    monkeypatch.setattr("agent.skills.discovery.run_nmap_ports", fake_port_scan)
+    monkeypatch.setattr("agent.skills.discovery.compare_known_hosts", lambda hosts, **kwargs: {"new_hosts": [], "disappeared_hosts": [], "changed_hosts": []})
+    monkeypatch.setattr("agent.skills.discovery.store_known_hosts", lambda hosts, **kwargs: {"added": 0, "updated": 0})
+
+    result = discover_network_hosts("192.168.1.0/24", ports="profile", scan_profile="quick")
+    assert result["scan_profile"] == "quick"
+    assert result["ports"] == "22,443"
+    assert seen["ports"] == "22,443"
+
+
+def test_discover_network_hosts_resolves_deep_scan_profile_ports(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        "agent.skills.discovery.run_nmap_host_discovery",
+        lambda cidr: {"alive_hosts": [], "success": True, "tool": "run_nmap_host_discovery"},
+    )
+
+    def fake_port_scan(cidr, ports):
+        seen["ports"] = ports
+        return {"findings": [], "success": True, "tool": "run_nmap_ports"}
+
+    monkeypatch.setattr("agent.skills.discovery.run_nmap_ports", fake_port_scan)
+    monkeypatch.setattr("agent.skills.discovery.compare_known_hosts", lambda hosts, **kwargs: {"new_hosts": [], "disappeared_hosts": [], "changed_hosts": []})
+    monkeypatch.setattr("agent.skills.discovery.store_known_hosts", lambda hosts, **kwargs: {"added": 0, "updated": 0})
+
+    result = discover_network_hosts("192.168.1.0/24", ports="profile", scan_profile="deep")
+    assert result["scan_profile"] == "deep"
+    assert result["ports"] == "1-1024"
+    assert seen["ports"] == "1-1024"
+
+
+def test_discover_network_hosts_custom_ports_override_scan_profile(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        "agent.skills.discovery.run_nmap_host_discovery",
+        lambda cidr: {"alive_hosts": [], "success": True, "tool": "run_nmap_host_discovery"},
+    )
+
+    def fake_port_scan(cidr, ports):
+        seen["ports"] = ports
+        return {"findings": [], "success": True, "tool": "run_nmap_ports"}
+
+    monkeypatch.setattr("agent.skills.discovery.run_nmap_ports", fake_port_scan)
+    monkeypatch.setattr("agent.skills.discovery.compare_known_hosts", lambda hosts, **kwargs: {"new_hosts": [], "disappeared_hosts": [], "changed_hosts": []})
+    monkeypatch.setattr("agent.skills.discovery.store_known_hosts", lambda hosts, **kwargs: {"added": 0, "updated": 0})
+
+    result = discover_network_hosts("192.168.1.0/24", ports="22,8443", scan_profile="deep")
+    assert result["scan_profile"] == "deep"
+    assert result["ports"] == "22,8443"
+    assert seen["ports"] == "22,8443"
 
 
 def test_discover_network_hosts_honors_explicit_masscan(monkeypatch):
@@ -321,6 +405,28 @@ def test_format_result_for_fallback_marks_ping_only():
     )
     assert "Scanner: nmap" in text
     assert "Ports: ping-only" in text
+
+
+def test_format_result_for_fallback_shows_scan_profile():
+    text = format_result_for_fallback(
+        {
+            "skill": "discover_network_hosts",
+            "cidr": "192.168.1.0/24",
+            "ports": "22,443",
+            "scanner": "nmap",
+            "scan_profile": "quick",
+            "host_count": 0,
+            "status": "ok",
+            "hosts": {},
+            "checks": {
+                "icmp_scan": {},
+                "port_scan": {},
+                "compare": {"new_hosts": [], "disappeared_hosts": [], "changed_hosts": []},
+            },
+        }
+    )
+    assert "Scan profile: quick" in text
+    assert "Ports: 22,443" in text
 
 
 def test_format_result_for_fallback_shows_preserved_inventory_details_for_ping_only_scan():

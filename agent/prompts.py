@@ -28,16 +28,18 @@ Use this for:
 - checking SSH reachability
 - troubleshooting one IP or hostname
 
-2. discover_network_hosts(cidr: string, ports: string | null, scanner?: "nmap" | "masscan", service_detection?: "safe" | "deep")
+2. discover_network_hosts(cidr: string, ports: string | null, scanner?: "nmap" | "masscan", scan_profile?: "quick" | "default" | "deep", service_detection?: "safe" | "deep")
 Use this for:
 - discovering hosts in a subnet
 - ICMP / host discovery scan
 - TCP port scan across a subnet
+- safe scan profiles: quick uses a lighter default port set, default uses the normal port set, deep uses a broader read-only port set
 - optional safe nmap service/version detection on discovered hosts
 - DNS reverse lookup
 - storing results in known_hosts.json
 - comparing current scan results to known_hosts.json
 - using masscan only when the user explicitly asks for it; otherwise prefer nmap
+- do not pass through raw nmap arguments; use scan_profile only
 
 3. run_remote_ssh_diagnostic(host: string, user: string | null, command?: string | null, request?: string)
 Use this for:
@@ -75,6 +77,11 @@ JSON examples:
 {{
   "skill": "discover_network_hosts",
   "args": {{"cidr": "192.168.1.0/24", "ports": "22,80,443", "scanner": "masscan"}}
+}}
+
+{{
+  "skill": "discover_network_hosts",
+  "args": {{"cidr": "192.168.1.0/24", "ports": "profile", "scan_profile": "quick"}}
 }}
 
 {{

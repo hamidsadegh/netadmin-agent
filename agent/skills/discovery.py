@@ -20,6 +20,13 @@ _SKIPPED_INVENTORY_RESULT = {
 }
 _ALLOWED_SCANNERS = {"nmap", "masscan"}
 _ALLOWED_SERVICE_DETECTION = {None, "none", "safe", "deep"}
+_ALLOWED_SCAN_PROFILES = {"quick", "default", "deep"}
+_PROFILE_PORTS_SENTINEL = object()
+SCAN_PROFILE_DEFAULT_PORTS = {
+    "quick": "22,443",
+    "default": "22,80,443",
+    "deep": "1-1024",
+}
 
 
 def _normalize_scanner(scanner: str | None) -> str:
@@ -36,6 +43,19 @@ def _normalize_service_detection(profile: str | None) -> str | None:
     if normalized not in _ALLOWED_SERVICE_DETECTION:
         raise ValueError(f"Unsupported service detection profile: {profile}")
     return None if normalized == "none" else normalized
+
+
+def _normalize_scan_profile(profile: str | None) -> str:
+    normalized = (profile or "default").strip().lower()
+    if normalized not in _ALLOWED_SCAN_PROFILES:
+        raise ValueError(f"Unsupported scan profile: {profile}")
+    return normalized
+
+
+def _resolve_profile_ports(ports: str | None | object, scan_profile: str) -> str | None:
+    if ports is _PROFILE_PORTS_SENTINEL or ports == "profile":
+        return SCAN_PROFILE_DEFAULT_PORTS[scan_profile]
+    return ports
 
 
 def _run_discovery_scan(scanner: str, cidr: str) -> dict:
@@ -73,11 +93,14 @@ def _merge_port_details(host_record: dict, port_entries: list[dict]) -> None:
 
 def discover_network_hosts(
     cidr: str,
-    ports: str | None = "22,80,443",
+    ports: str | None | object = _PROFILE_PORTS_SENTINEL,
     scanner: str | None = None,
+    scan_profile: str | None = None,
     service_detection: str | None = None,
 ) -> dict:
     scanner = _normalize_scanner(scanner)
+    scan_profile = _normalize_scan_profile(scan_profile)
+    ports = _resolve_profile_ports(ports, scan_profile)
     service_detection = _normalize_service_detection(service_detection)
 
     try:
@@ -106,6 +129,7 @@ def discover_network_hosts(
             "cidr": cidr,
             "ports": ports,
             "scanner": scanner,
+            "scan_profile": scan_profile,
             "service_detection": service_detection,
             "host_count": 0,
             "hosts": {},
@@ -275,6 +299,7 @@ def discover_network_hosts(
         "cidr": cidr,
         "ports": ports,
         "scanner": scanner,
+        "scan_profile": scan_profile,
         "service_detection": service_detection,
         "host_count": len(hosts),
         "hosts": hosts,

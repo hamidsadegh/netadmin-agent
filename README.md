@@ -37,6 +37,13 @@ Subnet discovery:
 python main.py --scan 192.168.178.0/24 --ports 22,80,443
 ```
 
+Subnet discovery with a safe profile:
+
+```bash
+python main.py --scan 192.168.178.0/24 --scan-profile quick
+python main.py --scan 192.168.178.0/24 --scan-profile deep
+```
+
 Explicit masscan subnet discovery:
 
 ```bash
@@ -212,6 +219,8 @@ That demo:
 - Subnet discovery now defaults to `nmap`; use `masscan` only when you explicitly request it.
 - `masscan` discovery still requires local availability of the binary and suitable privileges.
 - `nmap` scans run in read-only discovery mode (`-sn` for host discovery, normal port scans for requested ports).
+- Subnet discovery supports safe scan profiles: `quick` scans a lighter default port set (`22,443`), `default` keeps the normal default (`22,80,443`), and `deep` scans a broader read-only default (`1-1024`).
+- Custom `--ports` overrides the profile's default port set; raw `nmap` arguments are intentionally not supported.
 - Optional nmap service detection is explicit and limited to discovered hosts on the requested ports.
 - Service detection supports `safe` (`-sV --version-light`) and `deep` (`-sV --version-all`) presets.
 - Obvious host and subnet prompts are routed deterministically before falling back to the model.

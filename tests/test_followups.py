@@ -21,6 +21,12 @@ def test_detect_ambiguous_follow_up_preserves_service_detection_intent():
     assert follow_up["args"]["service_detection"] == "safe"
 
 
+def test_detect_ambiguous_follow_up_preserves_scan_profile_intent():
+    follow_up = detect_ambiguous_follow_up("deep scan the subnet")
+    assert follow_up["skill"] == "discover_network_hosts"
+    assert follow_up["args"]["scan_profile"] == "deep"
+
+
 def test_detect_ambiguous_follow_up_for_ssh_without_host():
     follow_up = detect_ambiguous_follow_up("ssh into the switch")
     assert follow_up["skill"] == "run_remote_ssh_diagnostic"
@@ -72,6 +78,28 @@ def test_complete_follow_up_accepts_first_ports_for_subnet_scan():
     assert completed == {
         "skill": "discover_network_hosts",
         "args": {"cidr": "192.168.1.0/24", "ports": "1-50"},
+    }
+
+
+def test_complete_follow_up_uses_profile_ports_sentinel_when_profile_was_pending():
+    completed = complete_follow_up(
+        {"skill": "discover_network_hosts", "args": {"scan_profile": "quick"}, "missing": ["cidr"]},
+        "192.168.1.0/24",
+    )
+    assert completed == {
+        "skill": "discover_network_hosts",
+        "args": {"scan_profile": "quick", "cidr": "192.168.1.0/24", "ports": "profile"},
+    }
+
+
+def test_complete_follow_up_accepts_scan_profile_with_cidr_reply():
+    completed = complete_follow_up(
+        {"skill": "discover_network_hosts", "args": {}, "missing": ["cidr"]},
+        "192.168.1.0/24 deep scan",
+    )
+    assert completed == {
+        "skill": "discover_network_hosts",
+        "args": {"cidr": "192.168.1.0/24", "ports": "profile", "scan_profile": "deep"},
     }
 
 

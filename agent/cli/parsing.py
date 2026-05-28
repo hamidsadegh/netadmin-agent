@@ -21,6 +21,11 @@ PORT_SCAN_HINTS = ("port scan", "scan port", "ports", "open ports")
 SSH_HINTS = ("ssh", "remote", "run", "execute", "command", "connect")
 SCANNER_HINTS = ("nmap", "masscan")
 SERVICE_DETECTION_HINTS = ("service scan", "service detection", "version detection", "version scan")
+SCAN_PROFILE_HINTS = {
+    "quick": ("quick scan", "quick profile", "fast scan", "light scan", "light profile"),
+    "default": ("default scan", "default profile", "normal scan", "normal profile"),
+    "deep": ("deep scan", "deep profile", "thorough scan", "thorough profile", "broader scan", "broad scan"),
+}
 SESSION_INFO_HINTS = (
     "session info",
     "session status",
@@ -197,15 +202,23 @@ def _extract_scanner_hint(lowered: str) -> str | None:
 def _extract_service_detection_hint(lowered: str) -> str | None:
     if not any(hint in lowered for hint in SERVICE_DETECTION_HINTS):
         return None
-    if "deep" in lowered:
+    if any(hint in lowered for hint in ("deep service", "deep version", "service detection deep", "version detection deep")):
         return "deep"
     return "safe"
+
+
+def _extract_scan_profile_hint(lowered: str) -> str | None:
+    for profile, hints in SCAN_PROFILE_HINTS.items():
+        if any(hint in lowered for hint in hints):
+            return profile
+    return None
 
 
 def parse_direct_skill_request(user_input: str) -> dict | None:
     text = user_input.strip()
     lowered = text.lower()
     scanner = _extract_scanner_hint(lowered)
+    scan_profile = _extract_scan_profile_hint(lowered)
     service_detection = _extract_service_detection_hint(lowered)
 
     hostport_match = IP_WITH_PORT_PATTERN.search(text)
@@ -256,10 +269,12 @@ def parse_direct_skill_request(user_input: str) -> dict | None:
         elif ports_match:
             ports = ports_match.group(1).replace(" ", "")
         else:
-            ports = "22,80,443"
+            ports = "profile" if scan_profile else "22,80,443"
         args = {"cidr": cidr_match.group(0), "ports": ports}
         if scanner:
             args["scanner"] = scanner
+        if scan_profile:
+            args["scan_profile"] = scan_profile
         if service_detection:
             args["service_detection"] = service_detection
         return {"skill": "discover_network_hosts", "args": args}
@@ -316,6 +331,9 @@ def detect_ambiguous_follow_up(user_input: str) -> dict | None:
         scanner = _extract_scanner_hint(lowered)
         if scanner:
             args["scanner"] = scanner
+        scan_profile = _extract_scan_profile_hint(lowered)
+        if scan_profile:
+            args["scan_profile"] = scan_profile
         service_detection = _extract_service_detection_hint(lowered)
         if service_detection:
             args["service_detection"] = service_detection
@@ -393,11 +411,16 @@ def complete_follow_up(pending: dict, user_input: str) -> dict | None:
             elif ping_only:
                 args["ports"] = None
             else:
-                args["ports"] = args.get("ports", "22,80,443")
+                args["ports"] = args.get("ports", "profile" if args.get("scan_profile") else "22,80,443")
             lowered = text.lower()
             scanner = _extract_scanner_hint(lowered)
             if scanner:
                 args["scanner"] = scanner
+            scan_profile = _extract_scan_profile_hint(lowered)
+            if scan_profile:
+                args["scan_profile"] = scan_profile
+                if args.get("ports") == "22,80,443":
+                    args["ports"] = "profile"
             service_detection = _extract_service_detection_hint(lowered)
             if service_detection:
                 args["service_detection"] = service_detection
