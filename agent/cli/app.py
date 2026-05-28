@@ -387,6 +387,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scan", help="Run a direct subnet discovery scan")
     parser.add_argument("--ports", default="22,80,443", help="Comma-separated port list or ranges for --scan")
     parser.add_argument("--scanner", choices=["nmap", "masscan"], help="Scanner to use for --scan (default: nmap)")
+    parser.add_argument("--service-detection", choices=["safe", "deep"], help="Run nmap service/version detection after discovery")
     parser.add_argument("--ssh-host", help="Run a remote SSH diagnostic against one host")
     parser.add_argument("--ssh-port", type=int, default=22, help="SSH port for --ssh-host")
     parser.add_argument("--ssh-user", help="SSH username for --ssh-host")
@@ -411,6 +412,7 @@ def main() -> None:
                     cidr=args.scan,
                     ports=args.ports,
                     scanner=args.scanner,
+                    service_detection=args.service_detection,
                 ),
                 indent=2,
             )

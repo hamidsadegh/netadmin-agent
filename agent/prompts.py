@@ -28,11 +28,12 @@ Use this for:
 - checking SSH reachability
 - troubleshooting one IP or hostname
 
-2. discover_network_hosts(cidr: string, ports: string | null, scanner?: "nmap" | "masscan")
+2. discover_network_hosts(cidr: string, ports: string | null, scanner?: "nmap" | "masscan", service_detection?: "safe" | "deep")
 Use this for:
 - discovering hosts in a subnet
 - ICMP / host discovery scan
 - TCP port scan across a subnet
+- optional safe nmap service/version detection on discovered hosts
 - DNS reverse lookup
 - storing results in known_hosts.json
 - comparing current scan results to known_hosts.json
@@ -74,6 +75,11 @@ JSON examples:
 {{
   "skill": "discover_network_hosts",
   "args": {{"cidr": "192.168.1.0/24", "ports": "22,80,443", "scanner": "masscan"}}
+}}
+
+{{
+  "skill": "discover_network_hosts",
+  "args": {{"cidr": "192.168.1.0/24", "ports": "22,80,443", "service_detection": "safe"}}
 }}
 
 {{

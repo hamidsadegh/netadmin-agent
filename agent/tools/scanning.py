@@ -176,12 +176,21 @@ def _read_nmap_hosts(xml_text: str) -> list[dict]:
             port_id = port.get("portid")
             if not port_id:
                 continue
-            ports.append(
-                {
-                    "port": int(port_id),
-                    "proto": port.get("protocol", "tcp"),
-                }
-            )
+            service = port.find("service")
+            port_entry = {
+                "port": int(port_id),
+                "proto": port.get("protocol", "tcp"),
+            }
+            if service is not None:
+                if service.get("name"):
+                    port_entry["service"] = service.get("name")
+                if service.get("product"):
+                    port_entry["product"] = service.get("product")
+                if service.get("version"):
+                    port_entry["version"] = service.get("version")
+                if service.get("extrainfo"):
+                    port_entry["extra_info"] = service.get("extrainfo")
+            ports.append(port_entry)
 
         hosts.append({"ip": address.get("addr"), "hostnames": hostnames, "ports": ports})
 
@@ -324,6 +333,57 @@ def run_nmap_ports(cidr: str, ports: str = "22,80,443") -> dict:
         "tool": "run_nmap_ports",
         "cidr": cidr,
         "ports": ports,
+        "success": bool(result and result.returncode == 0),
+        "findings": findings,
+        "count": len(findings),
+        "stdout": stdout,
+        "stderr": result.stderr if result else "",
+        "error": error,
+        "command": cmd,
+    }
+
+
+def run_nmap_service_detection(hosts: list[str], ports: str, profile: str = "safe") -> dict:
+    normalized_hosts = [validate_host(host) for host in hosts if host]
+    if not normalized_hosts:
+        return {
+            "tool": "run_nmap_service_detection",
+            "hosts": [],
+            "ports": validate_ports(ports),
+            "profile": profile,
+            "success": True,
+            "findings": [],
+            "count": 0,
+            "stdout": "",
+            "stderr": "",
+            "error": None,
+            "command": [],
+            "skipped": True,
+            "reason": "no_hosts",
+        }
+
+    normalized_ports = validate_ports(ports)
+    normalized_profile = (profile or "safe").strip().lower()
+    if normalized_profile not in {"safe", "deep"}:
+        raise ValueError(f"Unsupported nmap service detection profile: {profile}")
+
+    cmd = _build_nmap_base_cmd() + ["-n", "-Pn", "-sV", "-p", normalized_ports]
+    if normalized_profile == "safe":
+        cmd.append("--version-light")
+    else:
+        cmd.append("--version-all")
+    cmd.extend(["-oX", "-"] + normalized_hosts)
+
+    result, error = _run_nmap(cmd)
+    stdout = result.stdout if result else ""
+    parsed_hosts = _read_nmap_hosts(stdout)
+    findings = [{"ip": item["ip"], "ports": item["ports"]} for item in parsed_hosts if item.get("ports")]
+
+    return {
+        "tool": "run_nmap_service_detection",
+        "hosts": normalized_hosts,
+        "ports": normalized_ports,
+        "profile": normalized_profile,
         "success": bool(result and result.returncode == 0),
         "findings": findings,
         "count": len(findings),

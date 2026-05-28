@@ -30,6 +30,14 @@ def test_parse_direct_skill_request_supports_explicit_masscan():
     }
 
 
+def test_parse_direct_skill_request_supports_service_detection_scan():
+    parsed = parse_direct_skill_request("scan 192.168.178.0/24 ports 22,80,443 with service detection")
+    assert parsed == {
+        "skill": "discover_network_hosts",
+        "args": {"cidr": "192.168.178.0/24", "ports": "22,80,443", "service_detection": "safe"},
+    }
+
+
 def test_discover_network_hosts_uses_nmap_by_default(monkeypatch):
     monkeypatch.setattr(
         "agent.skills.discovery.run_nmap_host_discovery",
@@ -74,6 +82,49 @@ def test_discover_network_hosts_honors_explicit_masscan(monkeypatch):
     result = discover_network_hosts("192.168.1.0/24", ports="22", scanner="masscan")
     assert result["scanner"] == "masscan"
     assert result["status"] == "ok"
+
+
+def test_discover_network_hosts_runs_service_detection_when_requested(monkeypatch):
+    monkeypatch.setattr(
+        "agent.skills.discovery.run_nmap_host_discovery",
+        lambda cidr: {"alive_hosts": ["192.168.1.10"], "success": True, "tool": "run_nmap_host_discovery"},
+    )
+    monkeypatch.setattr(
+        "agent.skills.discovery.run_nmap_ports",
+        lambda cidr, ports: {"findings": [{"ip": "192.168.1.10", "ports": [{"port": 22, "proto": "tcp"}]}], "success": True, "tool": "run_nmap_ports"},
+    )
+    monkeypatch.setattr(
+        "agent.skills.discovery.run_nmap_service_detection",
+        lambda hosts, ports, profile: {"findings": [{"ip": "192.168.1.10", "ports": [{"port": 22, "proto": "tcp", "service": "ssh", "product": "OpenSSH", "version": "9.6"}]}], "success": True, "tool": "run_nmap_service_detection", "profile": profile, "count": 1},
+    )
+    monkeypatch.setattr("agent.skills.discovery.reverse_dns_lookup", lambda ip: {"hostname": None})
+    monkeypatch.setattr("agent.skills.discovery.compare_known_hosts", lambda hosts, **kwargs: {"new_hosts": [], "disappeared_hosts": [], "changed_hosts": []})
+    monkeypatch.setattr("agent.skills.discovery.store_known_hosts", lambda hosts, **kwargs: {"added": 0, "updated": 0})
+
+    result = discover_network_hosts("192.168.1.0/24", ports="22", service_detection="safe")
+    assert result["service_detection"] == "safe"
+    assert result["checks"]["service_scan"]["success"] is True
+    assert result["hosts"]["192.168.1.10"]["ports"][0]["service"] == "ssh"
+    assert result["hosts"]["192.168.1.10"]["ports"][0]["product"] == "OpenSSH"
+
+
+def test_discover_network_hosts_skips_service_detection_for_masscan(monkeypatch):
+    monkeypatch.setattr(
+        "agent.skills.discovery.run_masscan_icmp",
+        lambda cidr: {"alive_hosts": ["192.168.1.10"], "success": True, "tool": "run_masscan_icmp"},
+    )
+    monkeypatch.setattr(
+        "agent.skills.discovery.run_masscan_ports",
+        lambda cidr, ports: {"findings": [{"ip": "192.168.1.10", "ports": [{"port": 22, "proto": "tcp"}]}], "success": True, "tool": "run_masscan_ports"},
+    )
+    monkeypatch.setattr("agent.skills.discovery.reverse_dns_lookup", lambda ip: {"hostname": None})
+    monkeypatch.setattr("agent.skills.discovery.compare_known_hosts", lambda hosts, **kwargs: {"new_hosts": [], "disappeared_hosts": [], "changed_hosts": []})
+    monkeypatch.setattr("agent.skills.discovery.store_known_hosts", lambda hosts, **kwargs: {"added": 0, "updated": 0})
+
+    result = discover_network_hosts("192.168.1.0/24", ports="22", scanner="masscan", service_detection="safe")
+    assert result["checks"]["service_scan"]["success"] is False
+    assert result["checks"]["service_scan"]["reason"] == "scanner_unsupported"
+    assert "only supported with nmap" in result["checks"]["warnings"][0]
 
 
 def test_discover_network_hosts_ping_only_preserves_existing_inventory_details(monkeypatch, tmp_path):
@@ -310,6 +361,7 @@ def test_format_result_for_fallback_surfaces_auxiliary_scan_warnings():
             "checks": {
                 "icmp_scan": {},
                 "port_scan": {},
+                "service_scan": {},
                 "compare": {"new_hosts": [], "disappeared_hosts": [], "changed_hosts": []},
                 "warnings": [
                     "Reverse DNS lookup failed for 192.168.1.10: dns backend unavailable",
@@ -321,3 +373,36 @@ def test_format_result_for_fallback_surfaces_auxiliary_scan_warnings():
     assert "Warnings:" in text
     assert "Reverse DNS lookup failed for 192.168.1.10" in text
     assert "Known-hosts update failed: known_hosts.json is read-only" in text
+
+
+def test_format_result_for_fallback_shows_service_detection_details():
+    text = format_result_for_fallback(
+        {
+            "skill": "discover_network_hosts",
+            "cidr": "192.168.1.0/24",
+            "ports": "22,443",
+            "scanner": "nmap",
+            "service_detection": "safe",
+            "host_count": 1,
+            "status": "ok",
+            "hosts": {
+                "192.168.1.10": {
+                    "hostname": "switch.local",
+                    "ports": [
+                        {"port": 22, "proto": "tcp", "service": "ssh", "product": "OpenSSH", "version": "9.6"},
+                        {"port": 443, "proto": "tcp", "service": "https"},
+                    ],
+                }
+            },
+            "checks": {
+                "icmp_scan": {},
+                "port_scan": {},
+                "service_scan": {"success": True, "count": 1, "skipped": False},
+                "compare": {"new_hosts": [], "disappeared_hosts": [], "changed_hosts": []},
+                "warnings": [],
+            },
+        }
+    )
+    assert "Service detection: safe" in text
+    assert "Service matches: 1 host(s)" in text
+    assert "22/ssh OpenSSH 9.6" in text

@@ -7,6 +7,7 @@ from agent.tools import (
     run_masscan_ports,
     run_nmap_host_discovery,
     run_nmap_ports,
+    run_nmap_service_detection,
     store_known_hosts,
 )
 
@@ -18,6 +19,7 @@ _SKIPPED_INVENTORY_RESULT = {
     "reason": "scan_incomplete",
 }
 _ALLOWED_SCANNERS = {"nmap", "masscan"}
+_ALLOWED_SERVICE_DETECTION = {None, "none", "safe", "deep"}
 
 
 def _normalize_scanner(scanner: str | None) -> str:
@@ -25,6 +27,15 @@ def _normalize_scanner(scanner: str | None) -> str:
     if normalized not in _ALLOWED_SCANNERS:
         raise ValueError(f"Unsupported scanner: {scanner}")
     return normalized
+
+
+def _normalize_service_detection(profile: str | None) -> str | None:
+    if profile is None:
+        return None
+    normalized = profile.strip().lower()
+    if normalized not in _ALLOWED_SERVICE_DETECTION:
+        raise ValueError(f"Unsupported service detection profile: {profile}")
+    return None if normalized == "none" else normalized
 
 
 def _run_discovery_scan(scanner: str, cidr: str) -> dict:
@@ -39,8 +50,35 @@ def _run_port_scan(scanner: str, cidr: str, ports: str) -> dict:
     return run_nmap_ports(cidr=cidr, ports=ports)
 
 
-def discover_network_hosts(cidr: str, ports: str | None = "22,80,443", scanner: str | None = None) -> dict:
+def _merge_port_details(host_record: dict, port_entries: list[dict]) -> None:
+    existing = {
+        (item.get("port"), item.get("proto", "tcp")): dict(item)
+        for item in host_record.get("ports", [])
+        if item.get("port") is not None
+    }
+
+    for entry in port_entries:
+        key = (entry.get("port"), entry.get("proto", "tcp"))
+        if key == (None, None):
+            continue
+        merged = existing.get(key, {}).copy()
+        merged.update({k: v for k, v in entry.items() if v not in (None, "")})
+        if key[0] is not None:
+            merged.setdefault("port", key[0])
+        merged.setdefault("proto", key[1] or "tcp")
+        existing[key] = merged
+
+    host_record["ports"] = sorted(existing.values(), key=lambda item: (item.get("port", 0), item.get("proto", "tcp")))
+
+
+def discover_network_hosts(
+    cidr: str,
+    ports: str | None = "22,80,443",
+    scanner: str | None = None,
+    service_detection: str | None = None,
+) -> dict:
     scanner = _normalize_scanner(scanner)
+    service_detection = _normalize_service_detection(service_detection)
 
     try:
         previous_hosts = load_known_hosts()
@@ -68,6 +106,7 @@ def discover_network_hosts(cidr: str, ports: str | None = "22,80,443", scanner: 
             "cidr": cidr,
             "ports": ports,
             "scanner": scanner,
+            "service_detection": service_detection,
             "host_count": 0,
             "hosts": {},
             "status": "scan_failed",
@@ -86,11 +125,7 @@ def discover_network_hosts(cidr: str, ports: str | None = "22,80,443", scanner: 
             continue
 
         hosts.setdefault(ip, {"hostname": None, "alive_icmp": False, "ports": []})
-
-        for port_info in item.get("ports", []):
-            hosts[ip]["ports"].append(
-                {"port": port_info.get("port"), "proto": port_info.get("proto", "tcp")}
-            )
+        _merge_port_details(hosts[ip], item.get("ports", []))
 
     icmp_success = bool(icmp_scan.get("success"))
     port_scan_skipped = bool(port_scan.get("skipped"))
@@ -106,6 +141,69 @@ def discover_network_hosts(cidr: str, ports: str | None = "22,80,443", scanner: 
         warnings.append(f"Discovery scan failed ({discovery_label}): {icmp_scan.get('error') or 'scan returned an error'}")
     if not port_scan_success:
         warnings.append(f"Port scan failed ({port_label}): {port_scan.get('error') or 'scan returned an error'}")
+
+    service_scan = {
+        "tool": "run_nmap_service_detection",
+        "success": True,
+        "skipped": True,
+        "profile": service_detection,
+        "findings": [],
+        "count": 0,
+        "stdout": "",
+        "stderr": "",
+        "error": None,
+        "command": [],
+    }
+    if service_detection:
+        if scanner != "nmap":
+            service_scan.update({
+                "success": False,
+                "error": "service detection is only supported with the nmap scanner",
+                "reason": "scanner_unsupported",
+            })
+            warnings.append("Service detection was requested but skipped because it is only supported with nmap scans.")
+        elif not ports:
+            service_scan.update({
+                "success": False,
+                "error": "service detection requires a port scan",
+                "reason": "ports_required",
+            })
+            warnings.append("Service detection was requested but skipped because ping-only scans have no port targets.")
+        elif not port_scan_success:
+            service_scan.update({
+                "success": False,
+                "error": "service detection skipped because the port scan did not complete cleanly",
+                "reason": "port_scan_incomplete",
+            })
+            warnings.append("Service detection was skipped because the port scan did not complete cleanly.")
+        else:
+            service_hosts = sorted(ip for ip, info in hosts.items() if info.get("ports"))
+            try:
+                service_scan = run_nmap_service_detection(service_hosts, ports=ports, profile=service_detection)
+            except Exception as exc:
+                service_scan = {
+                    "tool": "run_nmap_service_detection",
+                    "success": False,
+                    "skipped": False,
+                    "profile": service_detection,
+                    "findings": [],
+                    "count": 0,
+                    "stdout": "",
+                    "stderr": "",
+                    "error": str(exc),
+                    "command": [],
+                }
+
+            if service_scan.get("success"):
+                for item in service_scan.get("findings", []):
+                    ip = item.get("ip")
+                    if not ip or ip not in hosts:
+                        continue
+                    _merge_port_details(hosts[ip], item.get("ports", []))
+            else:
+                warnings.append(
+                    f"Service detection failed: {service_scan.get('error') or 'nmap returned an error'}"
+                )
 
     dns_results = {}
     for ip in hosts:
@@ -177,12 +275,14 @@ def discover_network_hosts(cidr: str, ports: str | None = "22,80,443", scanner: 
         "cidr": cidr,
         "ports": ports,
         "scanner": scanner,
+        "service_detection": service_detection,
         "host_count": len(hosts),
         "hosts": hosts,
         "status": status,
         "checks": {
             "icmp_scan": icmp_scan,
             "port_scan": port_scan,
+            "service_scan": service_scan,
             "dns": dns_results,
             "compare": compare_result,
             "store": store_result,

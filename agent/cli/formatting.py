@@ -85,9 +85,13 @@ def format_result_for_fallback(result: dict) -> str:
         changed_hosts = compare.get("changed_hosts", [])
 
         scanner = result.get("scanner")
+        service_detection = result.get("service_detection")
+        service_scan = checks.get("service_scan", {})
         lines = [f"Network scan {status}: {cidr}"]
         if scanner:
             lines.append(f"Scanner: {scanner}")
+        if service_detection:
+            lines.append(f"Service detection: {service_detection}")
         lines.append(f"Ports: {ports}" if ports else "Ports: ping-only")
         lines.append(f"Hosts found: {host_count}")
 
@@ -100,7 +104,15 @@ def format_result_for_fallback(result: dict) -> str:
             for ip in sorted(hosts)[:10]:
                 info = hosts.get(ip, {})
                 hostname = info.get("hostname")
-                port_list = ", ".join(str(item.get("port")) for item in info.get("ports", [])) or "none"
+                rendered_ports = []
+                for item in info.get("ports", []):
+                    port_text = str(item.get("port"))
+                    service_bits = [item.get("service"), item.get("product"), item.get("version")]
+                    service_text = " ".join(bit for bit in service_bits if bit)
+                    if service_text:
+                        port_text = f"{port_text}/{service_text}"
+                    rendered_ports.append(port_text)
+                port_list = ", ".join(rendered_ports) or "none"
                 suffix = f" ({hostname})" if hostname else ""
                 preview.append(f"- {ip}{suffix} ports: {port_list}")
             lines.extend(["", "Hosts:", *preview])
@@ -109,7 +121,7 @@ def format_result_for_fallback(result: dict) -> str:
 
         warnings = list(checks.get("warnings", []))
         recommendation = None
-        for label, scan in (("ICMP", checks.get("icmp_scan", {})), ("Port scan", checks.get("port_scan", {}))):
+        for label, scan in (("ICMP", checks.get("icmp_scan", {})), ("Port scan", checks.get("port_scan", {})), ("Service detection", service_scan)):
             stderr_text = (scan.get("stderr") or "").strip()
             error_text = scan.get("error")
             if error_text:
@@ -131,6 +143,9 @@ def format_result_for_fallback(result: dict) -> str:
                     recommendation = "Run the scan with elevated privileges, or switch to an unprivileged connect-scan mode."
                 elif "init:" in lowered:
                     recommendation = "Set the correct network interface/source IP before scanning."
+
+        if service_detection and service_scan.get("success") and not service_scan.get("skipped"):
+            lines.append(f"Service matches: {service_scan.get('count', 0)} host(s)")
 
         if status == "ok" and host_count == 0 and not recommendation:
             recommendation = "If you expected results, verify target ownership, routing/firewall reachability, and whether the port is actually exposed."

@@ -20,6 +20,7 @@ DIRECT_HOST_HINTS = ("check", "host", "device", "ping", "reach", "connect")
 PORT_SCAN_HINTS = ("port scan", "scan port", "ports", "open ports")
 SSH_HINTS = ("ssh", "remote", "run", "execute", "command", "connect")
 SCANNER_HINTS = ("nmap", "masscan")
+SERVICE_DETECTION_HINTS = ("service scan", "service detection", "version detection", "version scan")
 SESSION_INFO_HINTS = (
     "session info",
     "session status",
@@ -193,10 +194,19 @@ def _extract_scanner_hint(lowered: str) -> str | None:
     return None
 
 
+def _extract_service_detection_hint(lowered: str) -> str | None:
+    if not any(hint in lowered for hint in SERVICE_DETECTION_HINTS):
+        return None
+    if "deep" in lowered:
+        return "deep"
+    return "safe"
+
+
 def parse_direct_skill_request(user_input: str) -> dict | None:
     text = user_input.strip()
     lowered = text.lower()
     scanner = _extract_scanner_hint(lowered)
+    service_detection = _extract_service_detection_hint(lowered)
 
     hostport_match = IP_WITH_PORT_PATTERN.search(text)
     generic_hostport_match = GENERIC_HOST_WITH_PORT_PATTERN.search(text)
@@ -250,6 +260,8 @@ def parse_direct_skill_request(user_input: str) -> dict | None:
         args = {"cidr": cidr_match.group(0), "ports": ports}
         if scanner:
             args["scanner"] = scanner
+        if service_detection:
+            args["service_detection"] = service_detection
         return {"skill": "discover_network_hosts", "args": args}
 
     ip_match = IP_PATTERN.search(text)
@@ -300,9 +312,16 @@ def detect_ambiguous_follow_up(user_input: str) -> dict | None:
     lowered = text.lower()
 
     if any(hint in lowered for hint in DIRECT_SCAN_HINTS) and not CIDR_PATTERN.search(text):
+        args = {"ports": None} if any(hint in lowered for hint in PING_ONLY_HINTS) else {}
+        scanner = _extract_scanner_hint(lowered)
+        if scanner:
+            args["scanner"] = scanner
+        service_detection = _extract_service_detection_hint(lowered)
+        if service_detection:
+            args["service_detection"] = service_detection
         return {
             "skill": "discover_network_hosts",
-            "args": {"ports": None} if any(hint in lowered for hint in PING_ONLY_HINTS) else {},
+            "args": args,
             "missing": ["cidr"],
             "question": "Which subnet should I scan? Give me a CIDR like 192.168.1.0/24.",
         }
@@ -375,9 +394,13 @@ def complete_follow_up(pending: dict, user_input: str) -> dict | None:
                 args["ports"] = None
             else:
                 args["ports"] = args.get("ports", "22,80,443")
-            scanner = _extract_scanner_hint(text.lower())
+            lowered = text.lower()
+            scanner = _extract_scanner_hint(lowered)
             if scanner:
                 args["scanner"] = scanner
+            service_detection = _extract_service_detection_hint(lowered)
+            if service_detection:
+                args["service_detection"] = service_detection
         elif field == "host":
             hostport_match = IP_WITH_PORT_PATTERN.search(text)
             generic_hostport_match = GENERIC_HOST_WITH_PORT_PATTERN.search(text)

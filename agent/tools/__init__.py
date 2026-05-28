@@ -29,6 +29,7 @@ from .scanning import (
     run_masscan_ports,
     run_nmap_host_discovery,
     run_nmap_ports,
+    run_nmap_service_detection,
     run_tcp_connect_scan,
 )
 from .ssh import (
@@ -75,6 +76,7 @@ __all__ = [
     "run_masscan_ports",
     "run_nmap_host_discovery",
     "run_nmap_ports",
+    "run_nmap_service_detection",
     "run_tcp_connect_scan",
     "save_known_hosts",
     "store_known_hosts",

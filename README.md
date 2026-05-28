@@ -43,6 +43,18 @@ Explicit masscan subnet discovery:
 python main.py --scan 192.168.178.0/24 --ports 22,80,443 --scanner masscan
 ```
 
+Subnet discovery with safe nmap service detection:
+
+```bash
+python main.py --scan 192.168.178.0/24 --ports 22,80,443 --service-detection safe
+```
+
+Deeper nmap service detection:
+
+```bash
+python main.py --scan 192.168.178.0/24 --ports 22,80,443 --service-detection deep
+```
+
 Remote SSH diagnostic:
 
 ```bash
@@ -200,6 +212,8 @@ That demo:
 - Subnet discovery now defaults to `nmap`; use `masscan` only when you explicitly request it.
 - `masscan` discovery still requires local availability of the binary and suitable privileges.
 - `nmap` scans run in read-only discovery mode (`-sn` for host discovery, normal port scans for requested ports).
+- Optional nmap service detection is explicit and limited to discovered hosts on the requested ports.
+- Service detection supports `safe` (`-sV --version-light`) and `deep` (`-sV --version-all`) presets.
 - Obvious host and subnet prompts are routed deterministically before falling back to the model.
 - SSH execution is intentionally limited to safe read-only diagnostics and blocks shell chaining / destructive commands.
 - Interactive scan/connectivity output should prefer a short human summary first; raw JSON is mainly for direct CLI flags or debugging.

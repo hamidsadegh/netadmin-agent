@@ -175,6 +175,24 @@ If an intent is not supported on the current platform:
 - keep session alive
 - suggest closest supported intents
 
+## Nmap follow-up roadmap
+
+1. **Service/version detection with safe presets**
+   - default remains basic discovery only
+   - add explicit `safe` and `deep` nmap service detection profiles
+   - run service detection only after host/port discovery finds candidates
+2. **Scan profiles**
+   - `quick`, `default`, and `deep` subnet scan presets
+   - make profile choice explicit in result output and audit data
+3. **Allowlisted NSE bundles**
+   - read-only curated bundles only (for example TLS, HTTP title, SSH hostkey, SNMP info)
+   - never allow arbitrary NSE script execution from natural-language prompts
+4. **Host role classification**
+   - infer likely device type from ports/services
+   - highlight management-plane endpoints and unusual exposures
+5. **Inventory diffs for services**
+   - track newly opened/closed services over time without permitting arbitrary scans
+
 ## Suggested next coding tasks
 
 1. Add session state object with:

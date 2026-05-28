@@ -15,6 +15,12 @@ def test_detect_ambiguous_follow_up_preserves_ping_only_intent():
     assert follow_up["args"]["ports"] is None
 
 
+def test_detect_ambiguous_follow_up_preserves_service_detection_intent():
+    follow_up = detect_ambiguous_follow_up("scan the subnet with service detection")
+    assert follow_up["skill"] == "discover_network_hosts"
+    assert follow_up["args"]["service_detection"] == "safe"
+
+
 def test_detect_ambiguous_follow_up_for_ssh_without_host():
     follow_up = detect_ambiguous_follow_up("ssh into the switch")
     assert follow_up["skill"] == "run_remote_ssh_diagnostic"

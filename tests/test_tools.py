@@ -6,6 +6,7 @@ import pytest
 
 from agent import tools
 from agent.tools.ssh import _append_fingerprint_output
+from agent.tools import scanning
 from agent.skills import scan_host_tcp_ports
 
 
@@ -369,6 +370,39 @@ def test_resolve_remote_command_rejects_explicit_command_outside_platform_allowl
 def test_clean_remote_output_compacts_and_limits_text():
     output = tools.clean_remote_output("  line one  \n\nline   two\n\n\nline three\n")
     assert output == "line one\n\nline two\n\nline three"
+
+
+def test_run_nmap_service_detection_parses_service_metadata(monkeypatch):
+    xml_output = """
+<nmaprun>
+  <host>
+    <status state=\"up\"/>
+    <address addr=\"192.168.1.10\" addrtype=\"ipv4\"/>
+    <ports>
+      <port protocol=\"tcp\" portid=\"22\">
+        <state state=\"open\"/>
+        <service name=\"ssh\" product=\"OpenSSH\" version=\"9.6\" extrainfo=\"protocol 2.0\"/>
+      </port>
+    </ports>
+  </host>
+</nmaprun>
+""".strip()
+
+    monkeypatch.setattr(scanning, "_build_nmap_base_cmd", lambda: ["nmap"])
+    monkeypatch.setattr(
+        scanning,
+        "_run_nmap",
+        lambda args, timeout=180: (type("Result", (), {"returncode": 0, "stdout": xml_output, "stderr": ""})(), None),
+    )
+
+    result = tools.run_nmap_service_detection(["192.168.1.10"], "22", profile="safe")
+
+    assert result["success"] is True
+    assert result["profile"] == "safe"
+    assert result["findings"][0]["ports"][0]["service"] == "ssh"
+    assert result["findings"][0]["ports"][0]["product"] == "OpenSSH"
+    assert result["findings"][0]["ports"][0]["version"] == "9.6"
+    assert result["findings"][0]["ports"][0]["extra_info"] == "protocol 2.0"
 
 
 def test_run_tcp_connect_scan_reports_open_ports(monkeypatch):
