@@ -1,8 +1,11 @@
 from agent.parsers.cisco import (
     parse_show_cdp_neighbors_detail,
     parse_show_interfaces_status,
+    parse_show_interfaces_trunk,
     parse_show_ip_interface_brief,
     parse_show_mac_address_table,
+    parse_show_port_channel_summary,
+    parse_show_vpc,
     parse_show_vlan_brief,
 )
 
@@ -58,6 +61,81 @@ def test_parse_show_mac_address_table():
     )
     assert parsed[0]["mac"] == "0011.2233.4455"
     assert parsed[0]["port"] == "Gi1/0/1"
+
+
+def test_parse_show_port_channel_summary_ios_members():
+    parsed = parse_show_port_channel_summary(
+        "Group  Port-channel  Protocol    Ports\n"
+        "------+-------------+-----------+-----------------------------------------------\n"
+        "1      Po1(SU)         LACP      Gi1/0/1(P) Gi1/0/2(P)\n"
+    )
+    assert parsed[0]["group"] == "1"
+    assert parsed[0]["port_channel"] == "Po1"
+    assert parsed[0]["flags"] == "SU"
+    assert parsed[0]["protocol"] == "LACP"
+    assert parsed[0]["members"] == [
+        {"interface": "Gi1/0/1", "flags": "P"},
+        {"interface": "Gi1/0/2", "flags": "P"},
+    ]
+
+
+def test_parse_show_port_channel_summary_nxos_members():
+    parsed = parse_show_port_channel_summary(
+        "Group Port-Channel Type Protocol Member Ports\n"
+        "1     Po10(SD)     Eth  LACP     Eth1/1(D) Eth1/2(P)\n"
+    )
+    assert parsed[0]["port_channel"] == "Po10"
+    assert parsed[0]["flags"] == "SD"
+    assert parsed[0]["members"][0] == {"interface": "Eth1/1", "flags": "D"}
+
+
+def test_parse_show_interfaces_trunk_ios_sections():
+    parsed = parse_show_interfaces_trunk(
+        "Port        Mode             Encapsulation  Status        Native vlan\n"
+        "Gi1/0/1     on               802.1q         trunking      1\n\n"
+        "Port        Vlans allowed on trunk\n"
+        "Gi1/0/1     1,10,20\n\n"
+        "Port        Vlans allowed and active in management domain\n"
+        "Gi1/0/1     1,10\n\n"
+        "Port        Vlans in spanning tree forwarding state and not pruned\n"
+        "Gi1/0/1     1\n"
+    )
+    assert parsed[0]["port"] == "Gi1/0/1"
+    assert parsed[0]["status"] == "trunking"
+    assert parsed[0]["native_vlan"] == "1"
+    assert parsed[0]["allowed_vlans"] == "1,10,20"
+    assert parsed[0]["active_vlans"] == "1,10"
+    assert parsed[0]["forwarding_vlans"] == "1"
+
+
+def test_parse_show_interfaces_trunk_nxos_sections():
+    parsed = parse_show_interfaces_trunk(
+        "Port          Native  Status        Port\n"
+        "              Vlan                  Channel\n"
+        "Eth1/1        1       trunking      Po10\n\n"
+        "Port          Vlans Allowed on Trunk\n"
+        "Eth1/1        10-12,20\n\n"
+        "Port          STP Forwarding\n"
+        "Eth1/1        10-12\n"
+    )
+    assert parsed[0]["port"] == "Eth1/1"
+    assert parsed[0]["status"] == "trunking"
+    assert parsed[0]["port_channel"] == "Po10"
+    assert parsed[0]["allowed_vlans"] == "10-12,20"
+    assert parsed[0]["forwarding_vlans"] == "10-12"
+
+
+def test_parse_show_vpc_extracts_status_and_rows():
+    parsed = parse_show_vpc(
+        "Peer status                : peer adjacency formed ok\n"
+        "Peer keep-alive status     : peer is alive\n"
+        "vPC peer-link status       : up\n\n"
+        "Id    Port          Status Consistency Reason                Active vlans\n"
+        "10    Po10          up     success     success               10-12\n"
+    )
+    assert parsed["peer_status"] == "peer adjacency formed ok"
+    assert parsed["peer_link_status"] == "up"
+    assert parsed["vpcs"][0]["port_channel"] == "Po10"
 
 
 def test_parse_show_cdp_neighbors_detail():

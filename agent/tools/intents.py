@@ -11,6 +11,7 @@ INTENT_KEYWORDS = {
     "memory": ("memory", "ram"),
     "disk": ("disk", "filesystem", "storage"),
     "interfaces": ("interface", "interfaces", "interface status"),
+    "interface_trunk": ("interface trunk", "interfaces trunk", "trunk allowed", "allowed vlan", "allowed vlans"),
     "ip_interfaces": ("ip interface", "ip interfaces", "interface brief"),
     "routes": ("route", "routes", "routing"),
     "services": ("service", "services"),

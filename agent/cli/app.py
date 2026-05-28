@@ -21,6 +21,7 @@ from agent.skills import (
     run_cisco_interface_down_playbook,
     run_cisco_interface_mac_table_playbook,
     run_cisco_mac_lookup_playbook,
+    run_cisco_trunk_uplink_playbook,
     run_cisco_uplink_health_playbook,
     run_cisco_vlan_check_playbook,
     run_remote_ssh_diagnostic,
@@ -203,6 +204,28 @@ def maybe_run_cisco_playbook(user_input: str):
 
     if interface_match and any(word in lowered for word in ("mac", "mac table", "mac address")):
         return run_cisco_interface_mac_table_playbook(
+            ACTIVE_SSH_SESSION["client"],
+            host=ACTIVE_SSH_SESSION["host"],
+            user=ACTIVE_SSH_SESSION["user"],
+            interface_name=interface_match.group(0),
+            platform_key=platform_key,
+        )
+
+    trunk_uplink_terms = (
+        "trunk",
+        "uplink",
+        "allowed vlan",
+        "allowed vlans",
+        "vlan mismatch",
+        "port-channel",
+        "port channel",
+        "etherchannel",
+        "lacp",
+        "pagp",
+        "vpc",
+    )
+    if interface_match and any(term in lowered for term in trunk_uplink_terms):
+        return run_cisco_trunk_uplink_playbook(
             ACTIVE_SSH_SESSION["client"],
             host=ACTIVE_SSH_SESSION["host"],
             user=ACTIVE_SSH_SESSION["user"],

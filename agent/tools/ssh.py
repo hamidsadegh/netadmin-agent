@@ -2,8 +2,11 @@ from agent.config import SSH_COMMAND_TIMEOUT, SSH_CONNECT_TIMEOUT
 from agent.parsers import (
     parse_show_cdp_neighbors_detail,
     parse_show_interfaces_status,
+    parse_show_interfaces_trunk,
     parse_show_ip_interface_brief,
     parse_show_mac_address_table,
+    parse_show_port_channel_summary,
+    parse_show_vpc,
     parse_show_vlan_brief,
 )
 from agent.platforms import detect_platform
@@ -254,6 +257,8 @@ def summarize_rhel_result(intent: str | None, stdout_text: str, stderr_text: str
 def parse_cisco_result(intent: str | None, command: str, stdout_text: str) -> dict | None:
     if intent == "interfaces":
         return {"interfaces": parse_show_interfaces_status(stdout_text)}
+    if intent == "interface_trunk":
+        return {"interface_trunks": parse_show_interfaces_trunk(stdout_text)}
     if intent == "ip_interfaces":
         return {"ip_interfaces": parse_show_ip_interface_brief(stdout_text)}
     if intent == "vlans":
@@ -262,6 +267,10 @@ def parse_cisco_result(intent: str | None, command: str, stdout_text: str) -> di
         return {"mac_table": parse_show_mac_address_table(stdout_text)}
     if intent == "neighbors":
         return {"neighbors": parse_show_cdp_neighbors_detail(stdout_text)}
+    if intent == "port_channel":
+        return {"port_channels": parse_show_port_channel_summary(stdout_text)}
+    if intent == "vpc":
+        return {"vpc": parse_show_vpc(stdout_text)}
     return None
 
 
@@ -280,6 +289,10 @@ def summarize_cisco_result(platform_key: str | None, intent: str | None, stdout_
         entries = parsed.get("interfaces", [])
         up_count = sum(1 for item in entries if str(item.get("status", "")).lower() in {"connected", "up"})
         return f"Found {len(entries)} interface entries; {up_count} appear connected."
+    if intent == "interface_trunk":
+        entries = parsed.get("interface_trunks", [])
+        trunking_count = sum(1 for item in entries if str(item.get("status", "")).lower() == "trunking")
+        return f"Found {len(entries)} trunk entries; {trunking_count} report trunking."
     if intent == "ip_interfaces":
         entries = parsed.get("ip_interfaces", [])
         up_count = sum(1 for item in entries if str(item.get("status", "")).lower() == "up")
@@ -297,9 +310,10 @@ def summarize_cisco_result(platform_key: str | None, intent: str | None, stdout_
     if intent == "spanning_tree":
         return f"Collected spanning-tree state with {len(lines)} lines."
     if intent == "port_channel":
-        return f"Collected port-channel summary with {len(lines)} lines."
+        return f"Found {len(parsed.get('port_channels', []))} port-channel summary entries."
     if intent == "vpc":
-        return f"Collected vPC state with {len(lines)} lines."
+        parsed_vpc = parsed.get("vpc", {})
+        return f"Collected vPC state with {len(parsed_vpc.get('vpcs', []))} vPC entries."
     if intent == "logs":
         return f"Collected {len(lines)} log lines from device buffer."
     if intent == "running_config":

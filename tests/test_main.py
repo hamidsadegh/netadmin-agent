@@ -436,6 +436,80 @@ def test_format_interface_mac_table_playbook_filters_output_without_raw_table():
     assert "Mac Address Table" not in text
 
 
+def test_format_trunk_uplink_playbook_is_human_friendly():
+    text = format_playbook_result(
+        {
+            "skill": "cisco_trunk_uplink_playbook",
+            "host": "127.0.0.1",
+            "user": "admin",
+            "platform_key": "cisco_ios_xe",
+            "interface": "GigabitEthernet1/0/1",
+            "assessment": "healthy",
+            "matches": {
+                "interfaces": [{"port": "Gi1/0/1", "status": "connected", "vlan": "trunk"}],
+                "neighbors": [{"device_id": "core-sw", "remote_port": "Ethernet1/1"}],
+                "spanning_tree": ["Gi1/0/1    Desg FWD 4         128.1    P2p"],
+                "port_channels": [
+                    {
+                        "port_channel": "Po1",
+                        "flags": "SU",
+                        "matched_member": {"interface": "GigabitEthernet1/0/1", "flags": "P"},
+                    }
+                ],
+                "interface_trunks": [
+                    {
+                        "port": "Gi1/0/1",
+                        "native_vlan": "1",
+                        "allowed_vlans": "1,10",
+                        "active_vlans": "1,10",
+                        "forwarding_vlans": "1,10",
+                    }
+                ],
+            },
+            "recommendations": ["Evidence is healthy; compare VLAN allowance/STP root placement only if symptoms persist."],
+        }
+    )
+
+    assert "Trunk/Uplink: Gi1/0/1" in text
+    assert "- Assessment: healthy" in text
+    assert "- Switchport: Gi1/0/1: connected VLAN trunk" in text
+    assert "- core-sw via Eth1/1" in text
+    assert "- Po1 flags SU member Gi1/0/1(P)" in text
+    assert "- Allowed VLANs: 1,10; active: 1,10; forwarding: 1,10" in text
+    assert "Trunk VLANs:" in text
+    assert "Matches:" not in text
+
+
+def test_format_trunk_uplink_playbook_includes_vpc_analysis():
+    text = format_playbook_result(
+        {
+            "skill": "cisco_trunk_uplink_playbook",
+            "host": "127.0.0.1",
+            "user": "admin",
+            "platform_key": "cisco_nxos",
+            "interface": "Ethernet1/1",
+            "assessment": "attention",
+            "matches": {
+                "interfaces": [{"port": "Eth1/1", "status": "connected", "vlan": "trunk"}],
+                "neighbors": [],
+                "spanning_tree": [],
+                "port_channels": [],
+                "interface_trunks": [],
+            },
+            "vpc_analysis": {
+                "matches": [{"id": "10", "port_channel": "Po10", "status": "down", "consistency": "failed"}],
+                "observations": ["vPC 10 Po10 status down consistency failed"],
+                "risks": ["vPC 10 is not up"],
+            },
+            "risks": ["vPC 10 is not up"],
+        }
+    )
+
+    assert "vPC:" in text
+    assert "- vPC 10 Po10 status down consistency failed" in text
+    assert "- vPC matches: 1" in text
+
+
 def test_display_interface_name_shortens_common_cisco_names():
     assert display_interface_name("GigabitEthernet1/0/1") == "Gi1/0/1"
     assert display_interface_name("TenGigabitEthernet1/1/1") == "Te1/1/1"
@@ -829,3 +903,49 @@ def test_maybe_run_cisco_playbook_matches_interface_mac_table(monkeypatch):
     result = maybe_run_cisco_playbook("mac table for int Gi1/0/6")
     assert result["skill"] == "cisco_interface_mac_table_playbook"
     assert result["interface"] == "Gi1/0/6"
+
+
+def test_maybe_run_cisco_playbook_matches_trunk_uplink(monkeypatch):
+    cli_app.ACTIVE_SSH_SESSION = {
+        "client": object(),
+        "host": "10.0.0.10",
+        "user": "admin",
+        "platform_key": "cisco_ios_xe",
+    }
+
+    monkeypatch.setattr(
+        cli_app,
+        "run_cisco_trunk_uplink_playbook",
+        lambda client, host, user, interface_name, platform_key=None: {
+            "skill": "cisco_trunk_uplink_playbook",
+            "interface": interface_name,
+            "platform_key": platform_key,
+        },
+    )
+
+    result = maybe_run_cisco_playbook("check trunk uplink Gi1/0/1")
+    assert result["skill"] == "cisco_trunk_uplink_playbook"
+    assert result["interface"] == "Gi1/0/1"
+
+
+def test_maybe_run_cisco_playbook_matches_vpc_uplink(monkeypatch):
+    cli_app.ACTIVE_SSH_SESSION = {
+        "client": object(),
+        "host": "10.0.0.10",
+        "user": "admin",
+        "platform_key": "cisco_nxos",
+    }
+
+    monkeypatch.setattr(
+        cli_app,
+        "run_cisco_trunk_uplink_playbook",
+        lambda client, host, user, interface_name, platform_key=None: {
+            "skill": "cisco_trunk_uplink_playbook",
+            "interface": interface_name,
+            "platform_key": platform_key,
+        },
+    )
+
+    result = maybe_run_cisco_playbook("check vPC uplink Eth1/1")
+    assert result["skill"] == "cisco_trunk_uplink_playbook"
+    assert result["platform_key"] == "cisco_nxos"

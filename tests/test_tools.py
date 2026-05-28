@@ -311,7 +311,16 @@ def test_infer_safe_remote_command_maps_common_requests():
     assert tools.infer_safe_remote_command("show interface brief", platform_key="cisco_ios") == (
         "show ip interface brief"
     )
+    assert tools.infer_safe_remote_command("show interface trunk", platform_key="cisco_ios") == (
+        "show interfaces trunk"
+    )
+    assert tools.infer_safe_remote_command("show allowed vlans", platform_key="cisco_nxos") == (
+        "show interface trunk"
+    )
     assert tools.infer_safe_remote_command("show routes", platform_key="cisco_ios") == "show ip route"
+    assert tools.infer_safe_remote_command("show port-channel summary", platform_key="cisco_ios") == (
+        "show etherchannel summary"
+    )
     assert tools.infer_safe_remote_command("show routes", platform_key="cisco_nxos") == "show ip route vrf all"
     assert tools.infer_safe_remote_command("show port-channel summary", platform_key="cisco_nxos") == (
         "show port-channel summary"
@@ -557,6 +566,42 @@ def test_summarize_remote_result_for_cisco_routes():
         "",
     )
     assert summary == "Collected routing table output with 3 lines."
+
+
+def test_summarize_remote_result_for_cisco_port_channels():
+    summary = tools.summarize_remote_result(
+        "cisco_ios",
+        "show port-channel",
+        "show etherchannel summary",
+        "Group  Port-channel  Protocol    Ports\n"
+        "1      Po1(SU)         LACP      Gi1/0/1(P) Gi1/0/2(P)\n",
+        "",
+    )
+    assert summary == "Found 1 port-channel summary entries."
+
+
+def test_summarize_remote_result_for_cisco_interface_trunks():
+    summary = tools.summarize_remote_result(
+        "cisco_ios",
+        "show interface trunk",
+        "show interfaces trunk",
+        "Port        Mode             Encapsulation  Status        Native vlan\n"
+        "Gi1/0/1     on               802.1q         trunking      1\n",
+        "",
+    )
+    assert summary == "Found 1 trunk entries; 1 report trunking."
+
+
+def test_summarize_remote_result_for_cisco_vpc_entries():
+    summary = tools.summarize_remote_result(
+        "cisco_nxos",
+        "show vpc",
+        "show vpc",
+        "Id    Port          Status Consistency Reason                Active vlans\n"
+        "10    Po10          up     success     success               10-12\n",
+        "",
+    )
+    assert summary == "Collected vPC state with 1 vPC entries."
 
 
 def test_infer_safe_remote_command_maps_rhel_logs_intent():
