@@ -19,6 +19,7 @@ DIRECT_SCAN_HINTS = ("scan", "discover", "subnet", "network", "inventory")
 DIRECT_HOST_HINTS = ("check", "host", "device", "ping", "reach", "connect")
 PORT_SCAN_HINTS = ("port scan", "scan port", "ports", "open ports")
 SSH_HINTS = ("ssh", "remote", "run", "execute", "command", "connect")
+SCANNER_HINTS = ("nmap", "masscan")
 SESSION_INFO_HINTS = (
     "session info",
     "session status",
@@ -185,9 +186,17 @@ def _extract_follow_up_token(text: str, *, reserved: set[str]) -> str | None:
     return None
 
 
+def _extract_scanner_hint(lowered: str) -> str | None:
+    for scanner in SCANNER_HINTS:
+        if scanner in lowered:
+            return scanner
+    return None
+
+
 def parse_direct_skill_request(user_input: str) -> dict | None:
     text = user_input.strip()
     lowered = text.lower()
+    scanner = _extract_scanner_hint(lowered)
 
     hostport_match = IP_WITH_PORT_PATTERN.search(text)
     generic_hostport_match = GENERIC_HOST_WITH_PORT_PATTERN.search(text)
@@ -238,7 +247,10 @@ def parse_direct_skill_request(user_input: str) -> dict | None:
             ports = ports_match.group(1).replace(" ", "")
         else:
             ports = "22,80,443"
-        return {"skill": "discover_network_hosts", "args": {"cidr": cidr_match.group(0), "ports": ports}}
+        args = {"cidr": cidr_match.group(0), "ports": ports}
+        if scanner:
+            args["scanner"] = scanner
+        return {"skill": "discover_network_hosts", "args": args}
 
     ip_match = IP_PATTERN.search(text)
     port_scan_host = _extract_hostname_candidate(
@@ -363,6 +375,9 @@ def complete_follow_up(pending: dict, user_input: str) -> dict | None:
                 args["ports"] = None
             else:
                 args["ports"] = args.get("ports", "22,80,443")
+            scanner = _extract_scanner_hint(text.lower())
+            if scanner:
+                args["scanner"] = scanner
         elif field == "host":
             hostport_match = IP_WITH_PORT_PATTERN.search(text)
             generic_hostport_match = GENERIC_HOST_WITH_PORT_PATTERN.search(text)

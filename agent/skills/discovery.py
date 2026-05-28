@@ -1,9 +1,12 @@
+from agent.config import DEFAULT_NETWORK_SCANNER
 from agent.tools import (
     compare_known_hosts,
     load_known_hosts,
     reverse_dns_lookup,
     run_masscan_icmp,
     run_masscan_ports,
+    run_nmap_host_discovery,
+    run_nmap_ports,
     store_known_hosts,
 )
 
@@ -14,21 +17,42 @@ _SKIPPED_INVENTORY_RESULT = {
     "skipped": True,
     "reason": "scan_incomplete",
 }
+_ALLOWED_SCANNERS = {"nmap", "masscan"}
 
 
-def discover_network_hosts(cidr: str, ports: str | None = "22,80,443") -> dict:
+def _normalize_scanner(scanner: str | None) -> str:
+    normalized = (scanner or DEFAULT_NETWORK_SCANNER or "nmap").strip().lower()
+    if normalized not in _ALLOWED_SCANNERS:
+        raise ValueError(f"Unsupported scanner: {scanner}")
+    return normalized
+
+
+def _run_discovery_scan(scanner: str, cidr: str) -> dict:
+    if scanner == "masscan":
+        return run_masscan_icmp(cidr=cidr)
+    return run_nmap_host_discovery(cidr=cidr)
+
+
+def _run_port_scan(scanner: str, cidr: str, ports: str) -> dict:
+    if scanner == "masscan":
+        return run_masscan_ports(cidr=cidr, ports=ports)
+    return run_nmap_ports(cidr=cidr, ports=ports)
+
+
+def discover_network_hosts(cidr: str, ports: str | None = "22,80,443", scanner: str | None = None) -> dict:
+    scanner = _normalize_scanner(scanner)
+
     try:
         previous_hosts = load_known_hosts()
     except Exception:
         previous_hosts = {}
 
     try:
-        icmp_scan = run_masscan_icmp(cidr=cidr)
-        port_scan = run_masscan_ports(cidr=cidr, ports=ports) if ports else {
-            "tool": "run_masscan_ports",
+        icmp_scan = _run_discovery_scan(scanner, cidr)
+        port_scan = _run_port_scan(scanner, cidr, ports) if ports else {
+            "tool": f"run_{scanner}_ports",
             "cidr": cidr,
             "ports": None,
-            "rate": None,
             "success": True,
             "findings": [],
             "count": 0,
@@ -43,6 +67,7 @@ def discover_network_hosts(cidr: str, ports: str | None = "22,80,443") -> dict:
             "skill": "discover_network_hosts",
             "cidr": cidr,
             "ports": ports,
+            "scanner": scanner,
             "host_count": 0,
             "hosts": {},
             "status": "scan_failed",
@@ -72,10 +97,15 @@ def discover_network_hosts(cidr: str, ports: str | None = "22,80,443") -> dict:
     port_scan_success = bool(port_scan.get("success")) or port_scan_skipped
     primary_scan_complete = icmp_success and port_scan_success
 
+    discovery_tool = icmp_scan.get("tool") or f"run_{scanner}_host_discovery"
+    port_tool = port_scan.get("tool") or f"run_{scanner}_ports"
+    discovery_label = discovery_tool.replace("run_", "").replace("_", " ")
+    port_label = port_tool.replace("run_", "").replace("_", " ")
+
     if not icmp_success:
-        warnings.append(f"ICMP scan failed: {icmp_scan.get('error') or 'masscan returned an error'}")
+        warnings.append(f"Discovery scan failed ({discovery_label}): {icmp_scan.get('error') or 'scan returned an error'}")
     if not port_scan_success:
-        warnings.append(f"Port scan failed: {port_scan.get('error') or 'masscan returned an error'}")
+        warnings.append(f"Port scan failed ({port_label}): {port_scan.get('error') or 'scan returned an error'}")
 
     dns_results = {}
     for ip in hosts:
@@ -146,6 +176,7 @@ def discover_network_hosts(cidr: str, ports: str | None = "22,80,443") -> dict:
         "skill": "discover_network_hosts",
         "cidr": cidr,
         "ports": ports,
+        "scanner": scanner,
         "host_count": len(hosts),
         "hosts": hosts,
         "status": status,

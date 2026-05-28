@@ -22,23 +22,58 @@ def test_parse_direct_skill_request_subnet_first_ports_uses_requested_range():
     }
 
 
-def test_discover_network_hosts_skips_port_scan_when_ports_none(monkeypatch):
+def test_parse_direct_skill_request_supports_explicit_masscan():
+    parsed = parse_direct_skill_request("masscan 192.168.178.0/24 ports 22,80,443")
+    assert parsed == {
+        "skill": "discover_network_hosts",
+        "args": {"cidr": "192.168.178.0/24", "ports": "22,80,443", "scanner": "masscan"},
+    }
+
+
+def test_discover_network_hosts_uses_nmap_by_default(monkeypatch):
     monkeypatch.setattr(
-        "agent.skills.discovery.run_masscan_icmp",
-        lambda cidr: {"alive_hosts": ["192.168.1.10"], "success": True},
+        "agent.skills.discovery.run_nmap_host_discovery",
+        lambda cidr: {"alive_hosts": ["192.168.1.10"], "success": True, "tool": "run_nmap_host_discovery"},
     )
     monkeypatch.setattr(
-        "agent.skills.discovery.run_masscan_ports",
+        "agent.skills.discovery.run_nmap_ports",
         lambda cidr, ports: (_ for _ in ()).throw(AssertionError("port scan should be skipped")),
+    )
+    monkeypatch.setattr(
+        "agent.skills.discovery.run_masscan_icmp",
+        lambda cidr: (_ for _ in ()).throw(AssertionError("masscan should not be used by default")),
     )
     monkeypatch.setattr("agent.skills.discovery.reverse_dns_lookup", lambda ip: {"hostname": None})
     monkeypatch.setattr("agent.skills.discovery.compare_known_hosts", lambda hosts, **kwargs: {"new_hosts": [], "disappeared_hosts": [], "changed_hosts": []})
     monkeypatch.setattr("agent.skills.discovery.store_known_hosts", lambda hosts, **kwargs: {"added": 0, "updated": 0})
 
     result = discover_network_hosts("192.168.1.0/24", ports=None)
+    assert result["scanner"] == "nmap"
     assert result["ports"] is None
     assert result["checks"]["port_scan"]["skipped"] is True
     assert result["host_count"] == 1
+
+
+def test_discover_network_hosts_honors_explicit_masscan(monkeypatch):
+    monkeypatch.setattr(
+        "agent.skills.discovery.run_masscan_icmp",
+        lambda cidr: {"alive_hosts": ["192.168.1.10"], "success": True, "tool": "run_masscan_icmp"},
+    )
+    monkeypatch.setattr(
+        "agent.skills.discovery.run_masscan_ports",
+        lambda cidr, ports: {"findings": [], "success": True, "tool": "run_masscan_ports"},
+    )
+    monkeypatch.setattr(
+        "agent.skills.discovery.run_nmap_host_discovery",
+        lambda cidr: (_ for _ in ()).throw(AssertionError("nmap should not be used when masscan was requested")),
+    )
+    monkeypatch.setattr("agent.skills.discovery.reverse_dns_lookup", lambda ip: {"hostname": None})
+    monkeypatch.setattr("agent.skills.discovery.compare_known_hosts", lambda hosts, **kwargs: {"new_hosts": [], "disappeared_hosts": [], "changed_hosts": []})
+    monkeypatch.setattr("agent.skills.discovery.store_known_hosts", lambda hosts, **kwargs: {"added": 0, "updated": 0})
+
+    result = discover_network_hosts("192.168.1.0/24", ports="22", scanner="masscan")
+    assert result["scanner"] == "masscan"
+    assert result["status"] == "ok"
 
 
 def test_discover_network_hosts_ping_only_preserves_existing_inventory_details(monkeypatch, tmp_path):
@@ -56,8 +91,8 @@ def test_discover_network_hosts_ping_only_preserves_existing_inventory_details(m
         )
     )
     monkeypatch.setattr(
-        "agent.skills.discovery.run_masscan_icmp",
-        lambda cidr: {"alive_hosts": ["192.168.1.10"], "success": True},
+        "agent.skills.discovery.run_nmap_host_discovery",
+        lambda cidr: {"alive_hosts": ["192.168.1.10"], "success": True, "tool": "run_nmap_host_discovery"},
     )
     monkeypatch.setattr("agent.skills.discovery.reverse_dns_lookup", lambda ip: {"hostname": None})
 
@@ -87,12 +122,12 @@ def test_discover_network_hosts_full_scan_preserves_hostname_when_reverse_dns_is
         )
     )
     monkeypatch.setattr(
-        "agent.skills.discovery.run_masscan_icmp",
-        lambda cidr: {"alive_hosts": ["192.168.1.10"], "success": True},
+        "agent.skills.discovery.run_nmap_host_discovery",
+        lambda cidr: {"alive_hosts": ["192.168.1.10"], "success": True, "tool": "run_nmap_host_discovery"},
     )
     monkeypatch.setattr(
-        "agent.skills.discovery.run_masscan_ports",
-        lambda cidr, ports: {"findings": [{"ip": "192.168.1.10", "ports": [{"port": 22, "proto": "tcp"}]}], "success": True},
+        "agent.skills.discovery.run_nmap_ports",
+        lambda cidr, ports: {"findings": [{"ip": "192.168.1.10", "ports": [{"port": 22, "proto": "tcp"}]}], "success": True, "tool": "run_nmap_ports"},
     )
     monkeypatch.setattr("agent.skills.discovery.reverse_dns_lookup", lambda ip: {"hostname": None})
 
@@ -107,12 +142,12 @@ def test_discover_network_hosts_full_scan_preserves_hostname_when_reverse_dns_is
 
 def test_discover_network_hosts_keeps_scan_results_when_auxiliary_steps_fail(monkeypatch):
     monkeypatch.setattr(
-        "agent.skills.discovery.run_masscan_icmp",
-        lambda cidr: {"alive_hosts": ["192.168.1.10"], "success": True},
+        "agent.skills.discovery.run_nmap_host_discovery",
+        lambda cidr: {"alive_hosts": ["192.168.1.10"], "success": True, "tool": "run_nmap_host_discovery"},
     )
     monkeypatch.setattr(
-        "agent.skills.discovery.run_masscan_ports",
-        lambda cidr, ports: {"findings": [], "success": True},
+        "agent.skills.discovery.run_nmap_ports",
+        lambda cidr, ports: {"findings": [], "success": True, "tool": "run_nmap_ports"},
     )
 
     def fake_reverse_dns_lookup(ip):
@@ -140,12 +175,12 @@ def test_discover_network_hosts_keeps_scan_results_when_auxiliary_steps_fail(mon
 
 def test_discover_network_hosts_marks_partial_scan_and_skips_inventory_on_primary_failure(monkeypatch):
     monkeypatch.setattr(
-        "agent.skills.discovery.run_masscan_icmp",
-        lambda cidr: {"alive_hosts": ["192.168.1.10"], "success": True},
+        "agent.skills.discovery.run_nmap_host_discovery",
+        lambda cidr: {"alive_hosts": ["192.168.1.10"], "success": True, "tool": "run_nmap_host_discovery"},
     )
     monkeypatch.setattr(
-        "agent.skills.discovery.run_masscan_ports",
-        lambda cidr, ports: {"findings": [], "success": False, "error": "permission denied", "stderr": "need to sudo"},
+        "agent.skills.discovery.run_nmap_ports",
+        lambda cidr, ports: {"findings": [], "success": False, "error": "permission denied", "stderr": "need to sudo", "tool": "run_nmap_ports"},
     )
     monkeypatch.setattr("agent.skills.discovery.reverse_dns_lookup", lambda ip: {"hostname": None})
     monkeypatch.setattr(
@@ -167,12 +202,12 @@ def test_discover_network_hosts_marks_partial_scan_and_skips_inventory_on_primar
 
 def test_discover_network_hosts_marks_full_primary_failure_without_inventory_churn(monkeypatch):
     monkeypatch.setattr(
-        "agent.skills.discovery.run_masscan_icmp",
-        lambda cidr: {"alive_hosts": [], "success": False, "error": "permission denied", "stderr": "need to sudo"},
+        "agent.skills.discovery.run_nmap_host_discovery",
+        lambda cidr: {"alive_hosts": [], "success": False, "error": "permission denied", "stderr": "need to sudo", "tool": "run_nmap_host_discovery"},
     )
     monkeypatch.setattr(
-        "agent.skills.discovery.run_masscan_ports",
-        lambda cidr, ports: {"findings": [], "success": False, "error": "permission denied", "stderr": "need to sudo"},
+        "agent.skills.discovery.run_nmap_ports",
+        lambda cidr, ports: {"findings": [], "success": False, "error": "permission denied", "stderr": "need to sudo", "tool": "run_nmap_ports"},
     )
     monkeypatch.setattr(
         "agent.skills.discovery.compare_known_hosts",
@@ -192,12 +227,12 @@ def test_discover_network_hosts_marks_full_primary_failure_without_inventory_chu
 
 def test_discover_network_hosts_compares_inventory_within_scanned_cidr(monkeypatch):
     monkeypatch.setattr(
-        "agent.skills.discovery.run_masscan_icmp",
-        lambda cidr: {"alive_hosts": ["192.168.1.10"], "success": True},
+        "agent.skills.discovery.run_nmap_host_discovery",
+        lambda cidr: {"alive_hosts": ["192.168.1.10"], "success": True, "tool": "run_nmap_host_discovery"},
     )
     monkeypatch.setattr(
-        "agent.skills.discovery.run_masscan_ports",
-        lambda cidr, ports: {"findings": [], "success": True},
+        "agent.skills.discovery.run_nmap_ports",
+        lambda cidr, ports: {"findings": [], "success": True, "tool": "run_nmap_ports"},
     )
     monkeypatch.setattr("agent.skills.discovery.reverse_dns_lookup", lambda ip: {"hostname": None})
 
@@ -222,6 +257,7 @@ def test_format_result_for_fallback_marks_ping_only():
             "skill": "discover_network_hosts",
             "cidr": "192.168.1.0/24",
             "ports": None,
+            "scanner": "nmap",
             "host_count": 1,
             "status": "ok",
             "hosts": {"192.168.1.10": {"hostname": None, "ports": []}},
@@ -232,6 +268,7 @@ def test_format_result_for_fallback_marks_ping_only():
             },
         }
     )
+    assert "Scanner: nmap" in text
     assert "Ports: ping-only" in text
 
 
@@ -241,6 +278,7 @@ def test_format_result_for_fallback_shows_preserved_inventory_details_for_ping_o
             "skill": "discover_network_hosts",
             "cidr": "192.168.1.0/24",
             "ports": None,
+            "scanner": "nmap",
             "host_count": 1,
             "status": "ok",
             "hosts": {
@@ -265,6 +303,7 @@ def test_format_result_for_fallback_surfaces_auxiliary_scan_warnings():
             "skill": "discover_network_hosts",
             "cidr": "192.168.1.0/24",
             "ports": "22",
+            "scanner": "nmap",
             "host_count": 1,
             "status": "ok_with_warnings",
             "hosts": {"192.168.1.10": {"hostname": None, "ports": []}},

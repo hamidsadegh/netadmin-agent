@@ -4,9 +4,10 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from agent.config import ALLOW_SUDO, DEFAULT_SCAN_RATE, MASSCAN_BINARY
+from agent.config import ALLOW_SUDO, DEFAULT_SCAN_RATE, MASSCAN_BINARY, NMAP_BINARY
 
 from .safety import validate_host, validate_ports, validate_scan_target
 
@@ -107,6 +108,22 @@ def _build_masscan_base_cmd() -> list[str]:
     return cmd
 
 
+def _build_nmap_base_cmd() -> list[str]:
+    binary = shutil.which(NMAP_BINARY)
+    if not binary:
+        raise RuntimeError(f"nmap binary not found: {NMAP_BINARY}")
+
+    cmd = []
+    if ALLOW_SUDO:
+        sudo_binary = shutil.which("sudo")
+        if not sudo_binary:
+            raise RuntimeError("sudo requested but not available")
+        cmd.append(sudo_binary)
+
+    cmd.append(binary)
+    return cmd
+
+
 def _read_masscan_output(path: Path) -> list:
     if not path.exists():
         return []
@@ -121,16 +138,74 @@ def _read_masscan_output(path: Path) -> list:
         return []
 
 
-def _run_masscan(args: list[str], timeout: int = 120) -> tuple[subprocess.CompletedProcess | None, str | None]:
+def _parse_nmap_xml(xml_text: str) -> ET.Element | None:
+    if not xml_text.strip():
+        return None
+
+    try:
+        return ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+
+
+def _read_nmap_hosts(xml_text: str) -> list[dict]:
+    root = _parse_nmap_xml(xml_text)
+    if root is None:
+        return []
+
+    hosts = []
+    for host in root.findall("host"):
+        status = host.find("status")
+        if status is not None and status.get("state") != "up":
+            continue
+
+        address = host.find("address[@addrtype='ipv4']")
+        if address is None or not address.get("addr"):
+            continue
+
+        hostnames = [
+            entry.get("name")
+            for entry in host.findall("hostnames/hostname")
+            if entry.get("name")
+        ]
+        ports = []
+        for port in host.findall("ports/port"):
+            state = port.find("state")
+            if state is None or state.get("state") != "open":
+                continue
+            port_id = port.get("portid")
+            if not port_id:
+                continue
+            ports.append(
+                {
+                    "port": int(port_id),
+                    "proto": port.get("protocol", "tcp"),
+                }
+            )
+
+        hosts.append({"ip": address.get("addr"), "hostnames": hostnames, "ports": ports})
+
+    return hosts
+
+
+def _run_command(args: list[str], timeout: int = 120, tool_name: str = "command") -> tuple[subprocess.CompletedProcess | None, str | None]:
     try:
         result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
         return result, None
     except subprocess.TimeoutExpired:
-        return None, "masscan timed out"
+        return None, f"{tool_name} timed out"
     except FileNotFoundError:
-        return None, "masscan binary not found"
+        return None, f"{tool_name} binary not found"
     except Exception as exc:  # pragma: no cover
         return None, str(exc)
+
+
+def _run_masscan(args: list[str], timeout: int = 120) -> tuple[subprocess.CompletedProcess | None, str | None]:
+    return _run_command(args, timeout=timeout, tool_name="masscan")
+
+
+def _run_nmap(args: list[str], timeout: int = 180) -> tuple[subprocess.CompletedProcess | None, str | None]:
+    return _run_command(args, timeout=timeout, tool_name="nmap")
 
 
 def run_masscan_ports(cidr: str, ports: str = "22,80,443", rate: int = DEFAULT_SCAN_RATE) -> dict:
@@ -207,6 +282,52 @@ def run_masscan_icmp(cidr: str, rate: int = DEFAULT_SCAN_RATE) -> dict:
         "alive_hosts": alive_hosts,
         "count": len(alive_hosts),
         "stdout": result.stdout if result else "",
+        "stderr": result.stderr if result else "",
+        "error": error,
+        "command": cmd,
+    }
+
+
+def run_nmap_host_discovery(cidr: str) -> dict:
+    cidr = validate_scan_target(cidr)
+    cmd = _build_nmap_base_cmd() + ["-sn", "-n", "-oX", "-", cidr]
+
+    result, error = _run_nmap(cmd)
+    stdout = result.stdout if result else ""
+    hosts = _read_nmap_hosts(stdout)
+    alive_hosts = sorted({item.get("ip") for item in hosts if item.get("ip")})
+
+    return {
+        "tool": "run_nmap_host_discovery",
+        "cidr": cidr,
+        "success": bool(result and result.returncode == 0),
+        "alive_hosts": alive_hosts,
+        "count": len(alive_hosts),
+        "stdout": stdout,
+        "stderr": result.stderr if result else "",
+        "error": error,
+        "command": cmd,
+    }
+
+
+def run_nmap_ports(cidr: str, ports: str = "22,80,443") -> dict:
+    cidr = validate_scan_target(cidr)
+    ports = validate_ports(ports)
+    cmd = _build_nmap_base_cmd() + ["-n", "-Pn", "-p", ports, "-oX", "-", cidr]
+
+    result, error = _run_nmap(cmd)
+    stdout = result.stdout if result else ""
+    hosts = _read_nmap_hosts(stdout)
+    findings = [{"ip": item["ip"], "ports": item["ports"]} for item in hosts if item.get("ports")]
+
+    return {
+        "tool": "run_nmap_ports",
+        "cidr": cidr,
+        "ports": ports,
+        "success": bool(result and result.returncode == 0),
+        "findings": findings,
+        "count": len(findings),
+        "stdout": stdout,
         "stderr": result.stderr if result else "",
         "error": error,
         "command": cmd,

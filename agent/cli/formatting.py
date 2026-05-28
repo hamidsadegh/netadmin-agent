@@ -84,7 +84,10 @@ def format_result_for_fallback(result: dict) -> str:
         disappeared_hosts = compare.get("disappeared_hosts", [])
         changed_hosts = compare.get("changed_hosts", [])
 
+        scanner = result.get("scanner")
         lines = [f"Network scan {status}: {cidr}"]
+        if scanner:
+            lines.append(f"Scanner: {scanner}")
         lines.append(f"Ports: {ports}" if ports else "Ports: ping-only")
         lines.append(f"Hosts found: {host_count}")
 

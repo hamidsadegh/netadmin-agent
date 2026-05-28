@@ -24,7 +24,13 @@ from .safety import (
     validate_ssh_port,
     validate_ssh_user,
 )
-from .scanning import run_masscan_icmp, run_masscan_ports, run_tcp_connect_scan
+from .scanning import (
+    run_masscan_icmp,
+    run_masscan_ports,
+    run_nmap_host_discovery,
+    run_nmap_ports,
+    run_tcp_connect_scan,
+)
 from .ssh import (
     connect_ssh_session,
     detect_platform_on_ssh_session,
@@ -67,6 +73,8 @@ __all__ = [
     "run_command_on_ssh_session",
     "run_masscan_icmp",
     "run_masscan_ports",
+    "run_nmap_host_discovery",
+    "run_nmap_ports",
     "run_tcp_connect_scan",
     "save_known_hosts",
     "store_known_hosts",

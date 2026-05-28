@@ -37,6 +37,12 @@ Subnet discovery:
 python main.py --scan 192.168.178.0/24 --ports 22,80,443
 ```
 
+Explicit masscan subnet discovery:
+
+```bash
+python main.py --scan 192.168.178.0/24 --ports 22,80,443 --scanner masscan
+```
+
 Remote SSH diagnostic:
 
 ```bash
@@ -110,6 +116,8 @@ Optional settings:
 NETADMIN_PROVIDER=openai
 NETADMIN_MODEL=gpt-4.1-mini
 NETADMIN_ALLOW_SUDO=0
+NETADMIN_DEFAULT_SCANNER=nmap
+NETADMIN_NMAP_BIN=nmap
 NETADMIN_MASSCAN_BIN=masscan
 NETADMIN_SCAN_RATE=1000
 NETADMIN_KNOWN_HOSTS_FILE=known_hosts.json
@@ -189,7 +197,9 @@ That demo:
 ## Notes
 
 - Scans are restricted to RFC1918 private networks.
-- `masscan` discovery requires local availability of the binary and suitable privileges.
+- Subnet discovery now defaults to `nmap`; use `masscan` only when you explicitly request it.
+- `masscan` discovery still requires local availability of the binary and suitable privileges.
+- `nmap` scans run in read-only discovery mode (`-sn` for host discovery, normal port scans for requested ports).
 - Obvious host and subnet prompts are routed deterministically before falling back to the model.
 - SSH execution is intentionally limited to safe read-only diagnostics and blocks shell chaining / destructive commands.
 - Interactive scan/connectivity output should prefer a short human summary first; raw JSON is mainly for direct CLI flags or debugging.

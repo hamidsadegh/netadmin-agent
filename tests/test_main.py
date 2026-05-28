@@ -44,6 +44,14 @@ def test_parse_direct_skill_request_detects_scan_prompt():
     }
 
 
+def test_parse_direct_skill_request_detects_explicit_masscan_scan_prompt():
+    parsed = parse_direct_skill_request("scan 192.168.178.0/24 with masscan ports 22,80,443")
+    assert parsed == {
+        "skill": "discover_network_hosts",
+        "args": {"cidr": "192.168.178.0/24", "ports": "22,80,443", "scanner": "masscan"},
+    }
+
+
 def test_parse_direct_skill_request_detects_direct_host_check():
     parsed = parse_direct_skill_request("check 192.168.178.49")
     assert parsed == {
@@ -168,6 +176,7 @@ def test_format_result_for_fallback_summarizes_network_scan():
             "skill": "discover_network_hosts",
             "cidr": "194.55.34.0/24",
             "ports": "80",
+            "scanner": "masscan",
             "host_count": 0,
             "status": "scan_failed",
             "hosts": {},
@@ -184,6 +193,7 @@ def test_format_result_for_fallback_summarizes_network_scan():
         }
     )
     assert "Network scan scan_failed: 194.55.34.0/24" in text
+    assert "Scanner: masscan" in text
     assert "Ports: 80" in text
     assert "Hosts found: 0" in text
     assert "Inventory changes:" not in text
@@ -199,6 +209,7 @@ def test_format_result_for_fallback_recommends_interface_fix_when_init_fails():
             "skill": "discover_network_hosts",
             "cidr": "10.0.0.0/24",
             "ports": "22",
+            "scanner": "nmap",
             "host_count": 0,
             "status": "ok",
             "hosts": {},
@@ -220,6 +231,7 @@ def test_format_result_for_fallback_marks_partial_network_scan():
             "skill": "discover_network_hosts",
             "cidr": "192.168.1.0/24",
             "ports": "22",
+            "scanner": "nmap",
             "host_count": 1,
             "status": "partial_scan",
             "hosts": {"192.168.1.10": {"hostname": None, "ports": []}},
