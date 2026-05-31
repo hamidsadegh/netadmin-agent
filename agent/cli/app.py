@@ -20,6 +20,8 @@ from agent.skills import (
     check_device_connectivity,
     discover_network_hosts,
     run_cisco_interface_check_playbook,
+    run_cisco_interface_config_diff_playbook,
+    run_cisco_interface_deep_dive_playbook,
     run_cisco_interface_down_playbook,
     run_cisco_interface_mac_table_playbook,
     run_cisco_mac_lookup_playbook,
@@ -108,6 +110,8 @@ AGENT_COMPLETIONS = (
     "session info",
     "what can I do on this platform?",
     "troubleshoot interface ",
+    "deep dive ",
+    "compare config ",
     "why is interface down ",
     "mac table for int ",
     "find mac ",
@@ -442,6 +446,17 @@ def maybe_retry_ssh_with_password(skill_name: str, args: dict, result: dict) -> 
     )
 
 
+def _extract_expected_config_request(user_input: str, interface_name: str) -> str | None:
+    lowered = user_input.lower()
+    markers = (" expected ", " should have ", " should be ")
+    for marker in markers:
+        idx = lowered.find(marker)
+        if idx >= 0:
+            expected = user_input[idx + len(marker) :].strip(" .")
+            return expected or None
+    return None
+
+
 def maybe_run_cisco_playbook(user_input: str):
     global ACTIVE_SSH_SESSION
 
@@ -458,6 +473,27 @@ def maybe_run_cisco_playbook(user_input: str):
         user_input = f"{user_input} {SESSION_MEMORY.last_interface}"
         lowered = user_input.lower()
         interface_match = INTERFACE_PATTERN.search(user_input)
+
+    if interface_match and any(term in lowered for term in ("deep dive", "deep-dive", "full check", "full troubleshoot")):
+        return run_cisco_interface_deep_dive_playbook(
+            ACTIVE_SSH_SESSION["client"],
+            host=ACTIVE_SSH_SESSION["host"],
+            user=ACTIVE_SSH_SESSION["user"],
+            interface_name=interface_match.group(0),
+            platform_key=platform_key,
+        )
+
+    if interface_match and any(term in lowered for term in ("compare config", "config diff", "expected config", "should have", "should be")):
+        expected_config = _extract_expected_config_request(user_input, interface_match.group(0))
+        if expected_config:
+            return run_cisco_interface_config_diff_playbook(
+                ACTIVE_SSH_SESSION["client"],
+                host=ACTIVE_SSH_SESSION["host"],
+                user=ACTIVE_SSH_SESSION["user"],
+                interface_name=interface_match.group(0),
+                expected_config=expected_config,
+                platform_key=platform_key,
+            )
 
     if interface_match and any(word in lowered for word in ("mac", "mac table", "mac address")):
         return run_cisco_interface_mac_table_playbook(

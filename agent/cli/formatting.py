@@ -393,6 +393,82 @@ def format_playbook_result(result: dict) -> str:
             lines.extend(["", "Entries:", "- No MAC addresses learned on this interface."])
         return "\n".join(lines)
 
+    if result.get("skill") == "cisco_interface_deep_dive_playbook":
+        matches = result.get("matches") or {}
+        interfaces = matches.get("interfaces") or []
+        ip_interfaces = matches.get("ip_interfaces") or []
+        neighbors = matches.get("neighbors") or []
+        mac_table = matches.get("mac_table") or []
+        interface = display_interface_name(result.get("interface")) or "interface"
+        sw = interfaces[0] if interfaces else {}
+        l3 = ip_interfaces[0] if ip_interfaces else {}
+        lines = [
+            f"Interface Deep Dive: {interface}",
+            f"Host: {result.get('user')}@{result.get('host')}",
+        ]
+        if result.get("platform_key"):
+            lines.append(f"Platform: {result.get('platform_key')}")
+        lines.extend(
+            [
+                "",
+                "Findings:",
+                f"- Switchport: {sw.get('status', 'not found')} VLAN {sw.get('vlan', 'unknown')}",
+                f"- L3 state: {l3.get('status', 'not found')}/{l3.get('protocol', 'unknown')}",
+                f"- Neighbors: {len(neighbors)}",
+                f"- MAC entries: {len(mac_table)}",
+                f"- Logs: {len(result.get('log_matches') or [])}",
+                f"- Config lines: {len(result.get('config_block') or [])}",
+            ]
+        )
+        if neighbors:
+            lines.extend(["", "Neighbor:"])
+            lines.extend(
+                f"- {entry.get('device_id', 'unknown')} remote {display_interface_name(entry.get('remote_port')) or 'unknown'}"
+                for entry in neighbors[:3]
+            )
+        if result.get("log_matches"):
+            lines.extend(["", "Logs:"])
+            lines.extend(f"- {line}" for line in (result.get("log_matches") or [])[:5])
+        if result.get("interface_lines"):
+            lines.extend(["", "Interface Evidence:"])
+            lines.extend(f"- {line}" for line in (result.get("interface_lines") or [])[:5])
+        if result.get("config_block"):
+            lines.extend(["", "Config Snippet:"])
+            lines.extend(f"- {line}" for line in (result.get("config_block") or [])[:8])
+        recommendations = result.get("recommendations") or []
+        if recommendations:
+            lines.extend(["", "Recommendations:"])
+            lines.extend(f"- {item}" for item in recommendations[:4])
+        return "\n".join(lines)
+
+    if result.get("skill") == "cisco_interface_config_diff_playbook":
+        interface = display_interface_name(result.get("interface")) or "interface"
+        comparison = result.get("comparison") or {}
+        missing = comparison.get("missing") or []
+        present = comparison.get("present") or []
+        config_block = comparison.get("config_block") or []
+        lines = [
+            f"Config Diff: {interface}",
+            f"Host: {result.get('user')}@{result.get('host')}",
+        ]
+        if result.get("platform_key"):
+            lines.append(f"Platform: {result.get('platform_key')}")
+        lines.extend(["", "Findings:", f"- Assessment: {result.get('assessment', 'unknown')}", f"- Present expected lines: {len(present)}", f"- Missing expected lines: {len(missing)}"])
+        lines.extend(["", "Missing:"])
+        if missing:
+            lines.extend(f"- {line}" for line in missing[:10])
+        else:
+            lines.append("- none")
+        if present:
+            lines.extend(["", "Present:"])
+            lines.extend(f"- {line}" for line in present[:10])
+        if config_block:
+            lines.extend(["", "Current Snippet:"])
+            lines.extend(f"- {line}" for line in config_block[:10])
+        else:
+            lines.extend(["", "Current Snippet:", "- Interface config block not found."])
+        return "\n".join(lines)
+
     if result.get("skill") in {"cisco_interface_check_playbook", "cisco_interface_down_playbook"}:
         matches = result.get("matches") or {}
         interfaces = matches.get("interfaces") or []

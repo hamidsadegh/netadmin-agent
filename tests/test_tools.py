@@ -605,6 +605,48 @@ def test_run_raw_command_on_ssh_session_returns_exact_stdout():
     assert result["stdout"] == "line 1\r\nline 2\n"
 
 
+def test_run_raw_command_on_ssh_session_applies_safe_include_filter():
+    class FakeChannel:
+        def recv_exit_status(self):
+            return 0
+
+    class FakeStream:
+        def __init__(self, text):
+            self._text = text.encode()
+            self.channel = FakeChannel()
+
+        def read(self):
+            return self._text
+
+    class FakeClient:
+        def exec_command(self, command, timeout=None):
+            assert command == "show interface status"
+            return None, FakeStream("Gi1/0/1 connected\nGi1/0/2 notconnect\n"), FakeStream("")
+
+    result = tools.run_raw_command_on_ssh_session(
+        FakeClient(),
+        host="192.168.1.10",
+        user="admin",
+        command="show interface status | include notconnect",
+        platform_key="cisco_ios_xe",
+    )
+
+    assert result["stdout"] == "Gi1/0/2 notconnect\n"
+    assert result["executed_command"] == "show interface status"
+    assert result["output_filter"] == "notconnect"
+
+
+def test_run_raw_command_on_ssh_session_rejects_unsafe_filter():
+    with pytest.raises(ValueError):
+        tools.run_raw_command_on_ssh_session(
+            object(),
+            host="192.168.1.10",
+            user="admin",
+            command="show logging | redirect flash:test",
+            platform_key="cisco_ios_xe",
+        )
+
+
 def test_summarize_remote_result_for_rhel_memory():
     summary = tools.summarize_remote_result(
         "rhel",

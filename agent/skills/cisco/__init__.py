@@ -1,5 +1,7 @@
 from .playbooks import (
     run_cisco_interface_check_playbook,
+    run_cisco_interface_config_diff_playbook,
+    run_cisco_interface_deep_dive_playbook,
     run_cisco_interface_down_playbook,
     run_cisco_interface_mac_table_playbook,
     run_cisco_mac_lookup_playbook,
@@ -10,6 +12,8 @@ from .playbooks import (
 
 __all__ = [
     "run_cisco_interface_check_playbook",
+    "run_cisco_interface_config_diff_playbook",
+    "run_cisco_interface_deep_dive_playbook",
     "run_cisco_interface_down_playbook",
     "run_cisco_interface_mac_table_playbook",
     "run_cisco_mac_lookup_playbook",

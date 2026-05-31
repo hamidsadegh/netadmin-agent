@@ -26,6 +26,7 @@ CISCO_RAW_READ_ONLY_PREFIXES = (
     "dir",
     "more",
 )
+SAFE_OUTPUT_FILTER_PATTERN = " include "
 
 
 def _best_effort_resolve_command(
@@ -406,12 +407,39 @@ def run_command_on_ssh_session(
 
 
 def validate_raw_ssh_command(command: str, platform_key: str | None = None) -> str:
-    selected_command = validate_read_only_command(command)
+    selected_command = validate_read_only_command(_split_output_filter(command)[0])
     lowered = selected_command.lower()
     if platform_key in {"cisco_ios", "cisco_ios_xe", "cisco_nxos"}:
         if not any(lowered == prefix or lowered.startswith(f"{prefix} ") for prefix in CISCO_RAW_READ_ONLY_PREFIXES):
             raise ValueError("Raw SSH mode only allows read-only Cisco commands like show, ping, traceroute, dir, and terminal length/width")
     return selected_command
+
+
+def _split_output_filter(command: str) -> tuple[str, str | None]:
+    text = str(command or "").strip()
+    parts = [part.strip() for part in text.split("|")]
+    if len(parts) == 1:
+        return text, None
+    if len(parts) != 2:
+        raise ValueError("Only one safe output filter is supported")
+    filter_text = parts[1].lower()
+    if filter_text.startswith("include "):
+        pattern = parts[1][len("include ") :].strip()
+    elif filter_text.startswith("i "):
+        pattern = parts[1][len("i ") :].strip()
+    else:
+        raise ValueError("Only '| include <text>' filters are supported")
+    if not pattern or any(token in pattern for token in ("\n", "\r", "|", ";", "&&", "||", "$(", "`", ">", "<")):
+        raise ValueError("Invalid output filter text")
+    return parts[0], pattern
+
+
+def _apply_output_filter(output: str, pattern: str | None) -> str:
+    if not pattern:
+        return output
+    needle = pattern.lower()
+    lines = [line for line in str(output or "").splitlines() if needle in line.lower()]
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
 def run_raw_command_on_ssh_session(
@@ -425,7 +453,8 @@ def run_raw_command_on_ssh_session(
     host = validate_host(host)
     user = validate_ssh_user(user)
     port = validate_ssh_port(port)
-    selected_command = validate_raw_ssh_command(command, platform_key=platform_key)
+    base_command, include_filter = _split_output_filter(command)
+    selected_command = validate_raw_ssh_command(base_command, platform_key=platform_key)
     target = f"{user}@{host}:{port}" if port != 22 else f"{user}@{host}"
 
     try:
@@ -433,16 +462,22 @@ def run_raw_command_on_ssh_session(
         stdout_text = stdout.read().decode(errors="replace")
         stderr_text = stderr.read().decode(errors="replace")
         return_code = stdout.channel.recv_exit_status()
+        filtered_stdout = _apply_output_filter(stdout_text, include_filter)
+        filtered_stderr = _apply_output_filter(stderr_text, include_filter)
         return {
             "tool": "execute_raw_ssh_command",
             "host": host,
             "port": port,
             "user": user,
-            "command": selected_command,
+            "command": command,
+            "executed_command": selected_command,
+            "output_filter": include_filter,
             "success": return_code == 0,
             "return_code": return_code,
-            "stdout": stdout_text,
-            "stderr": stderr_text,
+            "stdout": filtered_stdout,
+            "stderr": filtered_stderr,
+            "raw_stdout": stdout_text,
+            "raw_stderr": stderr_text,
             "target": target,
             "platform_key": platform_key,
         }

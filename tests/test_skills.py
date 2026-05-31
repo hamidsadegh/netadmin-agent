@@ -133,6 +133,93 @@ def test_run_cisco_interface_mac_table_playbook_filters_by_interface(monkeypatch
     assert "Found 1 MAC table entry on Gi1/0/6" in result["summary"]
 
 
+def test_run_cisco_interface_deep_dive_collects_logs_and_config(monkeypatch):
+    responses = {
+        "show interfaces": {
+            "skill": "run_remote_ssh_diagnostic",
+            "status": "ok",
+            "result": {
+                "stdout": "Gi1/0/24 down line\n",
+                "parsed": {"interfaces": [{"port": "Gi1/0/24", "status": "down", "vlan": "20"}]},
+            },
+        },
+        "show ip interfaces": {
+            "skill": "run_remote_ssh_diagnostic",
+            "status": "ok",
+            "result": {"parsed": {"ip_interfaces": [{"interface": "Gi1/0/24", "status": "down", "protocol": "down"}]}},
+        },
+        "show neighbors": {
+            "skill": "run_remote_ssh_diagnostic",
+            "status": "ok",
+            "result": {"parsed": {"neighbors": []}},
+        },
+        "show mac table": {
+            "skill": "run_remote_ssh_diagnostic",
+            "status": "ok",
+            "result": {"parsed": {"mac_table": []}},
+        },
+        "show logs": {
+            "skill": "run_remote_ssh_diagnostic",
+            "status": "ok",
+            "result": {"stdout": "%LINK-3-UPDOWN: Interface GigabitEthernet1/0/24, changed state to down\n"},
+        },
+        "show running config": {
+            "skill": "run_remote_ssh_diagnostic",
+            "status": "ok",
+            "result": {
+                "stdout": "interface GigabitEthernet1/0/24\n description test port\n switchport access vlan 20\n!\n"
+            },
+        },
+    }
+
+    monkeypatch.setattr(
+        playbooks,
+        "run_remote_ssh_diagnostic_on_session",
+        lambda client, host, user, command=None, request=None, platform_key=None: responses[request],
+    )
+
+    result = skills.run_cisco_interface_deep_dive_playbook(
+        DummyClient(),
+        host="10.0.0.10",
+        user="admin",
+        interface_name="Gi1/0/24",
+        platform_key="cisco_ios",
+    )
+
+    assert result["skill"] == "cisco_interface_deep_dive_playbook"
+    assert result["log_matches"]
+    assert "switchport access vlan 20" in result["config_block"]
+    assert "Interface deep dive Gi1/0/24" in result["summary"]
+
+
+def test_run_cisco_interface_config_diff_reports_missing_lines(monkeypatch):
+    monkeypatch.setattr(
+        playbooks,
+        "run_remote_ssh_diagnostic_on_session",
+        lambda client, host, user, command=None, request=None, platform_key=None: {
+            "skill": "run_remote_ssh_diagnostic",
+            "status": "ok",
+            "result": {
+                "stdout": "interface GigabitEthernet1/0/24\n description test port\n switchport access vlan 20\n!\n"
+            },
+        },
+    )
+
+    result = skills.run_cisco_interface_config_diff_playbook(
+        DummyClient(),
+        host="10.0.0.10",
+        user="admin",
+        interface_name="Gi1/0/24",
+        expected_config="description test port; switchport access vlan 30",
+        platform_key="cisco_ios",
+    )
+
+    assert result["skill"] == "cisco_interface_config_diff_playbook"
+    assert result["comparison"]["present"] == ["description test port"]
+    assert result["comparison"]["missing"] == ["switchport access vlan 30"]
+    assert result["assessment"] == "attention"
+
+
 def test_run_cisco_mac_lookup_playbook_matches_dotted_static_cpu_mac(monkeypatch):
     monkeypatch.setattr(
         playbooks,

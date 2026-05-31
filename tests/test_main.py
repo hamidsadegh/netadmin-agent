@@ -495,6 +495,56 @@ def test_format_interface_down_playbook_is_human_friendly_without_json():
     assert "Recommendations:" in text
 
 
+def test_format_interface_deep_dive_playbook_is_human_friendly():
+    text = format_playbook_result(
+        {
+            "skill": "cisco_interface_deep_dive_playbook",
+            "host": "127.0.0.1",
+            "user": "admin",
+            "platform_key": "cisco_ios_xe",
+            "interface": "Gi1/0/24",
+            "matches": {
+                "interfaces": [{"port": "Gi1/0/24", "status": "down", "vlan": "20"}],
+                "ip_interfaces": [{"interface": "Gi1/0/24", "status": "down", "protocol": "down"}],
+                "neighbors": [],
+                "mac_table": [],
+            },
+            "log_matches": ["%LINK-3-UPDOWN: Interface GigabitEthernet1/0/24, changed state to down"],
+            "interface_lines": ["Gi1/0/24 down line"],
+            "config_block": ["interface GigabitEthernet1/0/24", "switchport access vlan 20", "!"],
+            "recommendations": ["Start with physical/admin state and recent logs before any config change."],
+        }
+    )
+
+    assert "Interface Deep Dive: Gi1/0/24" in text
+    assert "Config Snippet:" in text
+    assert "switchport access vlan 20" in text
+    assert "Matches:" not in text
+
+
+def test_format_interface_config_diff_playbook_is_human_friendly():
+    text = format_playbook_result(
+        {
+            "skill": "cisco_interface_config_diff_playbook",
+            "host": "127.0.0.1",
+            "user": "admin",
+            "platform_key": "cisco_ios_xe",
+            "interface": "Gi1/0/24",
+            "assessment": "attention",
+            "comparison": {
+                "present": ["description test port"],
+                "missing": ["switchport access vlan 30"],
+                "config_block": ["interface GigabitEthernet1/0/24", "description test port", "switchport access vlan 20"],
+            },
+        }
+    )
+
+    assert "Config Diff: Gi1/0/24" in text
+    assert "Missing:" in text
+    assert "switchport access vlan 30" in text
+    assert "Current Snippet:" in text
+
+
 def test_format_interface_check_playbook_is_human_friendly_without_json():
     text = format_playbook_result(
         {
@@ -1370,6 +1420,52 @@ def test_maybe_run_cisco_playbook_matches_interface_down(monkeypatch):
     result = maybe_run_cisco_playbook("why is Gi1/0/24 down?")
     assert result["skill"] == "cisco_interface_down_playbook"
     assert result["interface"] == "Gi1/0/24"
+
+
+def test_maybe_run_cisco_playbook_matches_interface_deep_dive(monkeypatch):
+    cli_app.ACTIVE_SSH_SESSION = {
+        "client": object(),
+        "host": "10.0.0.10",
+        "user": "admin",
+        "platform_key": "cisco_ios",
+    }
+
+    monkeypatch.setattr(
+        cli_app,
+        "run_cisco_interface_deep_dive_playbook",
+        lambda client, host, user, interface_name, platform_key=None: {
+            "skill": "cisco_interface_deep_dive_playbook",
+            "interface": interface_name,
+        },
+    )
+
+    result = maybe_run_cisco_playbook("deep dive Gi1/0/24")
+    assert result["skill"] == "cisco_interface_deep_dive_playbook"
+    assert result["interface"] == "Gi1/0/24"
+
+
+def test_maybe_run_cisco_playbook_matches_config_diff(monkeypatch):
+    cli_app.ACTIVE_SSH_SESSION = {
+        "client": object(),
+        "host": "10.0.0.10",
+        "user": "admin",
+        "platform_key": "cisco_ios",
+    }
+
+    monkeypatch.setattr(
+        cli_app,
+        "run_cisco_interface_config_diff_playbook",
+        lambda client, host, user, interface_name, expected_config, platform_key=None: {
+            "skill": "cisco_interface_config_diff_playbook",
+            "interface": interface_name,
+            "expected_config": expected_config,
+        },
+    )
+
+    result = maybe_run_cisco_playbook("compare config Gi1/0/24 expected switchport access vlan 20")
+    assert result["skill"] == "cisco_interface_config_diff_playbook"
+    assert result["interface"] == "Gi1/0/24"
+    assert result["expected_config"] == "switchport access vlan 20"
 
 
 def test_maybe_run_cisco_playbook_matches_interface_check(monkeypatch):

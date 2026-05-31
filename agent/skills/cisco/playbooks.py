@@ -60,6 +60,47 @@ def _filter_lines_for_interface(output: str, interface_name: str, limit: int = 5
     return matches
 
 
+def _extract_interface_config_block(config_output: str, interface_name: str, limit: int = 80) -> list[str]:
+    wanted = normalize_interface_name(interface_name)
+    lines = str(config_output or "").splitlines()
+    block = []
+    in_block = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.lower().startswith("interface "):
+            current = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ""
+            in_block = normalize_interface_name(current) == wanted
+            if in_block:
+                block = [stripped]
+            continue
+        if in_block:
+            if stripped == "!":
+                block.append(stripped)
+                break
+            if stripped.lower().startswith(("interface ", "line ", "router ", "vlan ")):
+                break
+            block.append(stripped)
+            if len(block) >= limit:
+                break
+    return block
+
+
+def _parse_expected_config(expected_config: str) -> list[str]:
+    return [line.strip() for line in str(expected_config or "").replace(";", "\n").splitlines() if line.strip()]
+
+
+def _compare_config_lines(config_block: list[str], expected_lines: list[str]) -> dict:
+    normalized_block = {line.lower() for line in config_block}
+    present = []
+    missing = []
+    for line in expected_lines:
+        if line.lower() in normalized_block:
+            present.append(line)
+        else:
+            missing.append(line)
+    return {"present": present, "missing": missing, "config_block": config_block}
+
+
 def _find_port_channel_memberships(port_channels: list[dict], interface_name: str) -> list[dict]:
     wanted = normalize_interface_name(interface_name)
     matches = []
@@ -441,6 +482,113 @@ def run_cisco_interface_check_playbook(
             "mac_table": mac_result,
         },
         "summary": summary,
+    }
+
+
+def run_cisco_interface_deep_dive_playbook(
+    client,
+    host: str,
+    user: str,
+    interface_name: str,
+    platform_key: str | None = None,
+) -> dict:
+    check_result = run_cisco_interface_check_playbook(
+        client, host=host, user=user, interface_name=interface_name, platform_key=platform_key
+    )
+    log_result = run_remote_ssh_diagnostic_on_session(
+        client, host=host, user=user, request="show logs", platform_key=platform_key
+    )
+    config_result = run_remote_ssh_diagnostic_on_session(
+        client, host=host, user=user, request="show running config", platform_key=platform_key
+    )
+
+    interface_output = (((check_result.get("steps") or {}).get("interfaces") or {}).get("result") or {}).get("stdout") or ""
+    log_output = (log_result.get("result") or {}).get("stdout") or ""
+    config_output = (config_result.get("result") or {}).get("stdout") or ""
+    interface_lines = _filter_lines_for_interface(interface_output, interface_name, limit=12)
+    log_matches = _filter_logs_for_interface(log_output, interface_name, limit=8)
+    config_block = _extract_interface_config_block(config_output, interface_name)
+
+    matches = check_result.get("matches") or {}
+    interface_entries = matches.get("interfaces") or []
+    ip_entries = matches.get("ip_interfaces") or []
+    neighbor_entries = matches.get("neighbors") or []
+    mac_entries = matches.get("mac_table") or []
+    sw = interface_entries[0] if interface_entries else {}
+    l3 = ip_entries[0] if ip_entries else {}
+
+    observations = []
+    if sw:
+        observations.append(f"switchport status {sw.get('status', 'unknown')} VLAN {sw.get('vlan', 'unknown')}")
+    else:
+        observations.append("interface not found in interface status summary")
+    if l3:
+        observations.append(f"L3 state {l3.get('status', 'unknown')}/{l3.get('protocol', 'unknown')}")
+    observations.append(f"{len(neighbor_entries)} neighbor(s), {len(mac_entries)} MAC entry/entries")
+    observations.append(f"{len(log_matches)} related log line(s)")
+    observations.append("interface config block found" if config_block else "interface config block not found")
+    if interface_lines:
+        observations.append(f"{len(interface_lines)} raw interface line(s) matched")
+
+    recommendations = []
+    status = str(sw.get("status", "")).lower()
+    if status in {"notconnect", "down", "disabled", "err-disabled"}:
+        recommendations.append("Start with physical/admin state and recent logs before any config change.")
+    if not config_block:
+        recommendations.append("Verify the interface name and inspect running config manually if needed.")
+    if not recommendations:
+        recommendations.append("Evidence is mostly healthy; compare endpoint symptoms with logs and counters.")
+
+    return {
+        "skill": "cisco_interface_deep_dive_playbook",
+        "host": host,
+        "user": user,
+        "platform_key": platform_key,
+        "status": _combine_step_statuses(check_result, log_result, config_result),
+        "interface": interface_name,
+        "matches": matches,
+        "log_matches": log_matches,
+        "interface_lines": interface_lines,
+        "config_block": config_block,
+        "observations": observations,
+        "recommendations": recommendations,
+        "steps": {
+            **(check_result.get("steps") or {}),
+            "logs": log_result,
+            "running_config": config_result,
+        },
+        "summary": f"Interface deep dive {display_interface_name(interface_name)}: " + "; ".join(observations) + ".",
+    }
+
+
+def run_cisco_interface_config_diff_playbook(
+    client,
+    host: str,
+    user: str,
+    interface_name: str,
+    expected_config: str,
+    platform_key: str | None = None,
+) -> dict:
+    config_result = run_remote_ssh_diagnostic_on_session(
+        client, host=host, user=user, request="show running config", platform_key=platform_key
+    )
+    config_output = (config_result.get("result") or {}).get("stdout") or ""
+    config_block = _extract_interface_config_block(config_output, interface_name)
+    expected_lines = _parse_expected_config(expected_config)
+    comparison = _compare_config_lines(config_block, expected_lines)
+    missing = comparison["missing"]
+    return {
+        "skill": "cisco_interface_config_diff_playbook",
+        "host": host,
+        "user": user,
+        "platform_key": platform_key,
+        "status": _combine_step_statuses(config_result),
+        "interface": interface_name,
+        "expected_config": expected_lines,
+        "comparison": comparison,
+        "assessment": "match" if expected_lines and not missing else "attention",
+        "steps": {"running_config": config_result},
+        "summary": f"Config comparison for {display_interface_name(interface_name)}: {len(missing)} expected line(s) missing.",
     }
 
 

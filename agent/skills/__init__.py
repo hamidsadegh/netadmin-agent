@@ -4,6 +4,8 @@ from .port_scan import scan_host_tcp_ports
 from .ssh_diagnostics import run_remote_ssh_diagnostic, run_remote_ssh_diagnostic_on_session
 from .cisco import (
     run_cisco_interface_check_playbook,
+    run_cisco_interface_config_diff_playbook,
+    run_cisco_interface_deep_dive_playbook,
     run_cisco_interface_down_playbook,
     run_cisco_interface_mac_table_playbook,
     run_cisco_mac_lookup_playbook,
@@ -19,6 +21,8 @@ __all__ = [
     "run_remote_ssh_diagnostic",
     "run_remote_ssh_diagnostic_on_session",
     "run_cisco_interface_check_playbook",
+    "run_cisco_interface_config_diff_playbook",
+    "run_cisco_interface_deep_dive_playbook",
     "run_cisco_interface_down_playbook",
     "run_cisco_interface_mac_table_playbook",
     "run_cisco_mac_lookup_playbook",
