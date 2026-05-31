@@ -605,6 +605,36 @@ def test_run_raw_command_on_ssh_session_returns_exact_stdout():
     assert result["stdout"] == "line 1\r\nline 2\n"
 
 
+def test_run_raw_command_on_ssh_session_preserves_interface_case():
+    class FakeChannel:
+        def recv_exit_status(self):
+            return 0
+
+    class FakeStream:
+        def __init__(self, text):
+            self._text = text.encode()
+            self.channel = FakeChannel()
+
+        def read(self):
+            return self._text
+
+    class FakeClient:
+        def exec_command(self, command, timeout=None):
+            assert command == "show interface Gi1/0/1"
+            return None, FakeStream("GigabitEthernet1/0/1 is up\n"), FakeStream("")
+
+    result = tools.run_raw_command_on_ssh_session(
+        FakeClient(),
+        host="192.168.1.10",
+        user="admin",
+        command="show interface Gi1/0/1",
+        platform_key="cisco_ios_xe",
+    )
+
+    assert result["success"] is True
+    assert result["executed_command"] == "show interface Gi1/0/1"
+
+
 def test_run_raw_command_on_ssh_session_applies_safe_include_filter():
     class FakeChannel:
         def recv_exit_status(self):

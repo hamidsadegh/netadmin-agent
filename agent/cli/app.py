@@ -91,8 +91,14 @@ CONTROL_COMPLETIONS = (
     "help",
     "?",
     "/",
+)
+AGENT_CONTROL_COMPLETIONS = (
+    *CONTROL_COMPLETIONS,
+    "exit",
+)
+SSH_CONTROL_COMPLETIONS = (
+    *CONTROL_COMPLETIONS,
     "agent mode",
-    "ssh mode",
     "exit",
     "disconnect",
 )
@@ -104,10 +110,15 @@ AGENT_COMPLETIONS = (
     "show memory",
     "show remembered devices",
     "show last result",
-    "remember this device as ",
     "remember subnet ",
     "remember preference ",
     "session info",
+)
+SESSION_AGENT_COMPLETIONS = (
+    "session info",
+    "show memory",
+    "show last result",
+    "remember this device as ",
     "what can I do on this platform?",
     "troubleshoot interface ",
     "deep dive ",
@@ -197,8 +208,8 @@ def get_client():
 
 
 def get_interactive_completion_candidates(session: dict | None, mode: str) -> list[str]:
-    candidates = set(CONTROL_COMPLETIONS)
     if mode == "ssh" and session:
+        candidates = set(SSH_CONTROL_COMPLETIONS)
         platform_key = session.get("platform_key")
         candidates.update(CISCO_SSH_COMPLETION_EXTRAS.get(platform_key, ()))
         for example in PLATFORM_EXAMPLES.get(platform_key, ()):
@@ -210,9 +221,12 @@ def get_interactive_completion_candidates(session: dict | None, mode: str) -> li
         if profile:
             candidates.update(spec.command for spec in profile.safe_commands.values())
     else:
-        candidates.update(AGENT_COMPLETIONS)
+        candidates = set(AGENT_CONTROL_COMPLETIONS)
         if session:
-            candidates.update(PLATFORM_EXAMPLES.get(session.get("platform_key"), ()))
+            candidates.update(("ssh mode", "disconnect"))
+            candidates.update(SESSION_AGENT_COMPLETIONS)
+        else:
+            candidates.update(AGENT_COMPLETIONS)
     return sorted(candidates)
 
 
@@ -385,6 +399,13 @@ def print_raw_ssh_result(result: dict) -> None:
         sys.stderr.flush()
     if not stdout_text and not stderr_text and error_text:
         print_answer(f"SSH command failed: {error_text}")
+
+
+def is_inactive_ssh_result(result: dict | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    error_text = str(result.get("error") or "")
+    return "ssh session not active" in error_text.lower() or "socket is closed" in error_text.lower()
 
 
 def maybe_complete_ssh_args(skill_name: str, args: dict) -> dict:
@@ -593,11 +614,18 @@ def run_agent(user_input: str):
                 platform_key=ACTIVE_SSH_SESSION.get("platform_key"),
             )
             print_raw_ssh_result(result)
+            if is_inactive_ssh_result(result):
+                close_active_ssh_session()
+                print_answer("Returned to agent mode.")
+                return
             SESSION_MEMORY.remember_command(result.get("command"))
             SESSION_MEMORY.remember_device(ACTIVE_SSH_SESSION)
             SESSION_MEMORY.remember_turn(original_user_input, f"raw SSH command: {result.get('command')}")
         except Exception as exc:
             print_answer(str(exc))
+            if "ssh session not active" in str(exc).lower() or "socket is closed" in str(exc).lower():
+                close_active_ssh_session()
+                print_answer("Returned to agent mode.")
         return
 
     user_input = resolve_memory_reference(user_input)

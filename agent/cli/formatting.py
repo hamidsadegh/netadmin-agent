@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from agent.skills.cisco.common import display_interface_name
-from agent.tools import get_supported_intents
+from agent.tools import get_platform_profile, get_supported_intents
 
 IDENTITY_FILE = Path(__file__).resolve().parents[2] / "IDENTITY.md"
 
@@ -95,14 +95,7 @@ def format_help_response(session: dict | None = None, mode: str = "agent") -> st
     lines = [
         "NetAdmin Agent Help",
         "",
-        "Modes:",
-        "- agent mode: ask troubleshooting questions and run safe playbooks.",
-        "- ssh mode: send read-only commands directly to the active SSH device.",
-        "",
-        "Mode commands:",
-        "- ssh mode",
-        "- agent mode",
-        "- exit",
+        f"Current level: {mode}",
     ]
 
     if session:
@@ -117,33 +110,58 @@ def format_help_response(session: dict | None = None, mode: str = "agent") -> st
                 f"- Current mode: {mode}",
             ]
         )
-        supported_intents = get_supported_intents(session.get("platform_key"))
-        if supported_intents:
-            lines.extend(["", "Agent abilities:", "- " + ", ".join(supported_intents)])
-        examples = PLATFORM_EXAMPLES.get(platform_key, [])
-        if examples:
-            lines.extend(["", "Examples:", *(f"- {example}" for example in examples[:8])])
-    else:
-        lines.extend(
-            [
-                "",
-                "Examples:",
-                "- check 192.168.178.49",
-                "- scan 192.168.178.0/24",
-                "- connect to 127.0.0.1:2222 with user admin",
-                "- list all scanned hosts",
-            ]
-        )
+        if mode == "ssh":
+            profile = get_platform_profile(session.get("platform_key"))
+            if profile:
+                commands = sorted({spec.command for spec in profile.safe_commands.values()})
+                lines.extend(["", "Allowed SSH commands:", *(f"- {command}" for command in commands)])
+            lines.extend(["", "Level commands:", "- agent mode", "- disconnect", "- exit"])
+            return "\n".join(lines)
 
-    lines.extend(
-        [
-            "",
-            "More:",
-            "- who are you?",
-            "- session info",
-            "- what can I do on this platform?",
-        ]
-    )
+    if mode == "agent":
+        if session:
+            lines.extend(
+                [
+                    "",
+                    "Session agent commands:",
+                    "- session info",
+                    "- show memory",
+                    "- show last result",
+                    "- remember this device as core-switch",
+                ]
+            )
+            supported_intents = get_supported_intents(session.get("platform_key"))
+            if supported_intents:
+                lines.extend(["", "Agent abilities for current platform:", "- " + ", ".join(supported_intents)])
+            examples = [
+                example
+                for example in PLATFORM_EXAMPLES.get(session.get("platform_key"), [])
+                if not example.lower().startswith(("show ", "sh "))
+            ]
+            if examples:
+                lines.extend(["", "Platform-aware agent prompts:", *(f"- {example}" for example in examples[:8])])
+        else:
+            lines.extend(
+                [
+                    "",
+                    "Agent commands and prompts:",
+                    "- check 192.168.178.49",
+                    "- scan 192.168.178.0/24",
+                    "- connect to 127.0.0.1:2222 with user admin",
+                    "- list all scanned hosts",
+                    "- show memory",
+                    "- show last result",
+                    "- remember subnet 192.168.178.0/24 as home-lab",
+                    "- remember preference output short",
+                    "- who are you?",
+                    "- session info",
+                ]
+            )
+        level_commands = ["exit"]
+        if session:
+            level_commands = ["ssh mode", "disconnect", *level_commands]
+        lines.extend(["", "Level commands:", *(f"- {command}" for command in level_commands)])
+
     return "\n".join(lines)
 
 

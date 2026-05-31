@@ -774,10 +774,32 @@ def test_format_help_response_lists_modes_and_session_examples():
     )
 
     assert "NetAdmin Agent Help" in text
-    assert "ssh mode: send read-only commands directly" in text
+    assert "Current level: ssh" in text
     assert "Target: admin@127.0.0.1:2222" in text
     assert "Current mode: ssh" in text
+    assert "Allowed SSH commands:" in text
     assert "show interfaces status" in text
+    assert "troubleshoot interface Gi1/0/1" not in text
+
+
+def test_format_help_response_scopes_agent_mode_to_agent_prompts():
+    text = format_help_response(
+        {
+            "host": "127.0.0.1",
+            "port": 2222,
+            "user": "admin",
+            "platform_key": "cisco_ios_xe",
+        },
+        mode="agent",
+    )
+
+    assert "Current level: agent" in text
+    assert "Session agent commands:" in text
+    assert "Platform-aware agent prompts:" in text
+    assert "troubleshoot interface Gi1/0/1" in text
+    assert "connect to 127.0.0.1:2222" not in text
+    assert "scan 192.168.178.0/24" not in text
+    assert "show interfaces status" not in text
 
 
 def test_run_agent_answers_identity_question_without_diagnostics(monkeypatch):
@@ -817,7 +839,12 @@ def test_run_agent_answers_help_without_diagnostics(monkeypatch):
 
     assert outputs
     assert "NetAdmin Agent Help" in outputs[-1]
-    assert "Modes:" in outputs[-1]
+    assert "Current level: agent" in outputs[-1]
+    assert "Agent commands and prompts:" in outputs[-1]
+    assert "- ssh mode" not in outputs[-1]
+    assert "- disconnect" not in outputs[-1]
+    assert "remember this device as" not in outputs[-1]
+    assert "Platform-aware agent prompts:" not in outputs[-1]
 
 
 def test_format_active_session_status_includes_platform_intents_and_examples():
@@ -886,6 +913,8 @@ def test_ssh_mode_completion_candidates_include_platform_commands():
     assert "show interface status" in candidates
     assert "show mac table" in candidates
     assert "agent mode" in candidates
+    assert "ssh mode" not in candidates
+    assert "troubleshoot interface " not in candidates
 
 
 def test_agent_mode_completion_candidates_include_agent_actions():
@@ -893,7 +922,60 @@ def test_agent_mode_completion_candidates_include_agent_actions():
 
     assert "connect to " in candidates
     assert "scan " in candidates
+    assert "exit" in candidates
+    assert "agent mode" not in candidates
+    assert "ssh mode" not in candidates
+    assert "disconnect" not in candidates
+    assert "remember this device as " not in candidates
+    assert "what can I do on this platform?" not in candidates
+    assert "troubleshoot interface " not in candidates
+    assert "deep dive " not in candidates
+    assert "compare config " not in candidates
+    assert "why is interface down " not in candidates
+    assert "mac table for int " not in candidates
+    assert "find mac " not in candidates
+    assert "check vlan " not in candidates
+
+
+def test_agent_mode_completion_candidates_include_session_controls_with_session():
+    candidates = get_interactive_completion_candidates(
+        {"platform_key": "cisco_ios_xe"},
+        "agent",
+    )
+
     assert "ssh mode" in candidates
+    assert "disconnect" in candidates
+    assert "agent mode" not in candidates
+    assert "session info" in candidates
+    assert "show memory" in candidates
+    assert "show last result" in candidates
+    assert "remember this device as " in candidates
+    assert "what can I do on this platform?" in candidates
+    assert "troubleshoot interface " in candidates
+    assert "deep dive " in candidates
+    assert "compare config " in candidates
+    assert "why is interface down " in candidates
+    assert "mac table for int " in candidates
+    assert "find mac " in candidates
+    assert "check vlan " in candidates
+    assert "check " not in candidates
+    assert "scan " not in candidates
+    assert "connect to " not in candidates
+    assert "list all scanned hosts" not in candidates
+    assert "show remembered devices" not in candidates
+    assert "remember subnet " not in candidates
+    assert "remember preference " not in candidates
+
+
+def test_agent_mode_completion_candidates_do_not_include_platform_commands_from_session():
+    candidates = get_interactive_completion_candidates(
+        {"platform_key": "cisco_ios_xe"},
+        "agent",
+    )
+
+    assert "troubleshoot interface " in candidates
+    assert "show interfaces status" not in candidates
+    assert "show version" not in candidates
 
 
 def test_complete_interactive_input_returns_stateful_matches(monkeypatch):
@@ -1330,6 +1412,55 @@ def test_run_agent_ssh_mode_prints_raw_stdout_without_separator(monkeypatch):
 
     assert calls[0]["command"] == "show version"
     assert writes == ["Cisco IOS XE Software\n"]
+
+
+def test_run_agent_ssh_mode_exits_session_when_raw_result_is_inactive(monkeypatch):
+    printed = []
+    cli_app.SESSION_MEMORY = cli_app.SessionMemory()
+    monkeypatch.setattr(
+        cli_app,
+        "ACTIVE_SSH_SESSION",
+        {"client": object(), "host": "127.0.0.1", "port": 2222, "user": "admin", "platform_key": "cisco_ios_xe"},
+    )
+    monkeypatch.setattr(cli_app, "ACTIVE_INTERACTIVE_MODE", "ssh")
+    monkeypatch.setattr(cli_app, "print_paged", lambda text, **_kwargs: printed.append(text))
+    monkeypatch.setattr(
+        cli_app,
+        "run_raw_command_on_ssh_session",
+        lambda *_args, **_kwargs: {"stdout": "", "stderr": "", "error": "SSH session not active"},
+    )
+
+    cli_app.run_agent("show run")
+
+    assert cli_app.ACTIVE_SSH_SESSION is None
+    assert cli_app.ACTIVE_INTERACTIVE_MODE == "agent"
+    assert any("SSH command failed: SSH session not active" in item for item in printed)
+    assert any("Returned to agent mode." in item for item in printed)
+    assert cli_app.SESSION_MEMORY.last_command is None
+
+
+def test_run_agent_ssh_mode_exits_session_when_raw_command_raises_inactive(monkeypatch):
+    printed = []
+    cli_app.SESSION_MEMORY = cli_app.SessionMemory()
+    monkeypatch.setattr(
+        cli_app,
+        "ACTIVE_SSH_SESSION",
+        {"client": object(), "host": "127.0.0.1", "port": 2222, "user": "admin", "platform_key": "cisco_ios_xe"},
+    )
+    monkeypatch.setattr(cli_app, "ACTIVE_INTERACTIVE_MODE", "ssh")
+    monkeypatch.setattr(cli_app, "print_paged", lambda text, **_kwargs: printed.append(text))
+
+    def raise_inactive(*_args, **_kwargs):
+        raise RuntimeError("SSH session not active")
+
+    monkeypatch.setattr(cli_app, "run_raw_command_on_ssh_session", raise_inactive)
+
+    cli_app.run_agent("show run")
+
+    assert cli_app.ACTIVE_SSH_SESSION is None
+    assert cli_app.ACTIVE_INTERACTIVE_MODE == "agent"
+    assert any("SSH session not active" in item for item in printed)
+    assert any("Returned to agent mode." in item for item in printed)
 
 
 def test_run_with_status_uses_console_status(monkeypatch):
