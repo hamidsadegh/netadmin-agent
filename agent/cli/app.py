@@ -33,8 +33,10 @@ from agent.skills import (
 from agent.tools import UnsupportedIntentError, connect_ssh_session, run_raw_command_on_ssh_session
 
 from .formatting import (
+    PLATFORM_EXAMPLES,
     build_interactive_prompt,
     format_active_session_status,
+    format_help_response,
     format_identity_response,
     format_playbook_result,
     format_result_for_fallback,
@@ -49,6 +51,7 @@ from .parsing import (
     detect_ambiguous_follow_up,
     extract_json,
     is_casual_greeting,
+    is_help_request,
     is_identity_request,
     is_scan_memory_request,
     is_session_info_request,
@@ -65,6 +68,54 @@ LAST_SCAN_RESULT = None
 PAGER_MIN_LINES = 12
 SIMULATOR_PLATFORMS = ("ios", "iosxe", "nxos")
 ANSWER_SEPARATOR = "-" * 72
+CONTROL_COMPLETIONS = (
+    "help",
+    "?",
+    "/",
+    "agent mode",
+    "ssh mode",
+    "exit",
+    "disconnect",
+)
+AGENT_COMPLETIONS = (
+    "check ",
+    "scan ",
+    "connect to ",
+    "list all scanned hosts",
+    "session info",
+    "what can I do on this platform?",
+    "troubleshoot interface ",
+    "why is interface down ",
+    "mac table for int ",
+    "find mac ",
+    "check vlan ",
+)
+CISCO_SSH_COMPLETION_EXTRAS = {
+    "cisco_ios": (
+        "show interface status",
+        "show int status",
+        "show mac table",
+        "show logging",
+        "show run",
+        "sh run",
+    ),
+    "cisco_ios_xe": (
+        "show interface status",
+        "show int status",
+        "show mac table",
+        "show logging",
+        "show run",
+        "sh run",
+    ),
+    "cisco_nxos": (
+        "show interfaces status",
+        "show int status",
+        "show mac table",
+        "show logging last 50",
+        "show run",
+        "sh run",
+    ),
+}
 
 
 def _read_pager_key() -> str:
@@ -116,6 +167,38 @@ def print_answer(text: str, *, force: bool = False) -> None:
 
 def get_client():
     return get_provider().get_client()
+
+
+def get_interactive_completion_candidates(session: dict | None, mode: str) -> list[str]:
+    candidates = set(CONTROL_COMPLETIONS)
+    if mode == "ssh" and session:
+        platform_key = session.get("platform_key")
+        candidates.update(CISCO_SSH_COMPLETION_EXTRAS.get(platform_key, ()))
+        for example in PLATFORM_EXAMPLES.get(platform_key, ()):
+            if example.lower().startswith(("show ", "sh ")):
+                candidates.add(example)
+        from agent.tools import get_platform_profile
+
+        profile = get_platform_profile(platform_key)
+        if profile:
+            candidates.update(spec.command for spec in profile.safe_commands.values())
+    else:
+        candidates.update(AGENT_COMPLETIONS)
+        if session:
+            candidates.update(PLATFORM_EXAMPLES.get(session.get("platform_key"), ()))
+    return sorted(candidates)
+
+
+def complete_interactive_input(text: str, state: int):
+    matches = [
+        candidate
+        for candidate in get_interactive_completion_candidates(ACTIVE_SSH_SESSION, ACTIVE_INTERACTIVE_MODE)
+        if candidate.lower().startswith(str(text).lower())
+    ]
+    try:
+        return matches[state]
+    except IndexError:
+        return None
 
 
 def ask_model_for_skill(user_input: str) -> str:
@@ -200,6 +283,9 @@ def close_active_ssh_session() -> None:
 def handle_interactive_control_command(question: str) -> str | None:
     global ACTIVE_INTERACTIVE_MODE
     lowered = question.lower()
+    if is_help_request(question):
+        print_answer(format_help_response(ACTIVE_SSH_SESSION, ACTIVE_INTERACTIVE_MODE), force=True)
+        return "handled"
     if lowered in ["agent mode", "agent", "/agent"]:
         ACTIVE_INTERACTIVE_MODE = "agent"
         print_answer("Agent mode enabled.")
@@ -416,6 +502,10 @@ def run_agent(user_input: str):
         print_answer("Hi. What should we check?")
         return
 
+    if is_help_request(user_input):
+        print_answer(format_help_response(ACTIVE_SSH_SESSION, ACTIVE_INTERACTIVE_MODE), force=True)
+        return
+
     if is_identity_request(user_input):
         print_answer(format_identity_response(ACTIVE_SSH_SESSION), force=True)
         return
@@ -615,7 +705,7 @@ def main() -> None:
         run_agent(args.prompt)
         return
 
-    setup_interactive_history()
+    setup_interactive_history(completer=complete_interactive_input)
     print("[bold green]NetAdmin Agent started. Type 'exit' to quit.[/bold green]")
 
     while True:

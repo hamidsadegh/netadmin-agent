@@ -27,7 +27,7 @@ def save_interactive_history() -> None:
         return
 
 
-def setup_interactive_history() -> bool:
+def setup_interactive_history(completer=None) -> bool:
     if readline is None:
         return False
 
@@ -37,6 +37,9 @@ def setup_interactive_history() -> bool:
         if history_file.exists():
             readline.read_history_file(str(history_file))
         readline.set_history_length(HISTORY_LENGTH)
+        if completer is not None:
+            readline.set_completer(completer)
+            readline.parse_and_bind("tab: complete")
         atexit.register(save_interactive_history)
         return True
     except Exception:

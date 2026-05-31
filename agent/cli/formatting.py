@@ -91,6 +91,62 @@ def format_identity_response(session: dict | None = None) -> str:
     return "\n".join(lines).strip()
 
 
+def format_help_response(session: dict | None = None, mode: str = "agent") -> str:
+    lines = [
+        "NetAdmin Agent Help",
+        "",
+        "Modes:",
+        "- agent mode: ask troubleshooting questions and run safe playbooks.",
+        "- ssh mode: send read-only commands directly to the active SSH device.",
+        "",
+        "Mode commands:",
+        "- ssh mode",
+        "- agent mode",
+        "- exit",
+    ]
+
+    if session:
+        platform_key = session.get("platform_key") or "unknown"
+        target = f"{session.get('user')}@{session.get('host')}:{session.get('port') or 22}"
+        lines.extend(
+            [
+                "",
+                "Current session:",
+                f"- Target: {target}",
+                f"- Platform: {platform_key}",
+                f"- Current mode: {mode}",
+            ]
+        )
+        supported_intents = get_supported_intents(session.get("platform_key"))
+        if supported_intents:
+            lines.extend(["", "Agent abilities:", "- " + ", ".join(supported_intents)])
+        examples = PLATFORM_EXAMPLES.get(platform_key, [])
+        if examples:
+            lines.extend(["", "Examples:", *(f"- {example}" for example in examples[:8])])
+    else:
+        lines.extend(
+            [
+                "",
+                "Examples:",
+                "- check 192.168.178.49",
+                "- scan 192.168.178.0/24",
+                "- connect to 127.0.0.1:2222 with user admin",
+                "- list all scanned hosts",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "More:",
+            "- who are you?",
+            "- session info",
+            "- what can I do on this platform?",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def format_result_for_fallback(result: dict) -> str:
     if isinstance(result, dict) and result.get("skill") == "run_remote_ssh_diagnostic":
         ssh = result.get("result", {})

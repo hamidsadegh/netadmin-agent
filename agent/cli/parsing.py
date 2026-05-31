@@ -69,8 +69,8 @@ IDENTITY_HINTS = (
     "what ability",
     "abilities",
     "ability",
-    "help",
 )
+HELP_REQUESTS = {"help", "?", "/", "/help"}
 CASUAL_GREETINGS = {
     "hey",
     "hi",
@@ -536,6 +536,11 @@ def complete_follow_up(pending: dict, user_input: str) -> dict | None:
 def is_session_info_request(user_input: str) -> bool:
     lowered = user_input.strip().lower()
     return any(hint in lowered for hint in SESSION_INFO_HINTS)
+
+
+def is_help_request(user_input: str) -> bool:
+    lowered = user_input.strip().lower()
+    return lowered in HELP_REQUESTS
 
 
 def is_scan_memory_request(user_input: str) -> bool:

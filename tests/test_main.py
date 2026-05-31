@@ -1,15 +1,19 @@
 from main import (
     build_interactive_prompt,
+    complete_interactive_input,
     extract_explicit_ssh_command,
     extract_json,
     format_active_session_status,
+    format_help_response,
     format_identity_response,
     format_playbook_result,
     format_result_for_fallback,
     format_scan_memory,
+    get_interactive_completion_candidates,
     get_history_file,
     get_skill_status_message,
     is_casual_greeting,
+    is_help_request,
     is_identity_request,
     is_scan_memory_request,
     is_session_info_request,
@@ -676,6 +680,13 @@ def test_is_session_info_request_matches_helpful_phrases():
     assert is_session_info_request("check 192.168.178.49") is False
 
 
+def test_is_help_request_matches_short_help_commands():
+    assert is_help_request("help") is True
+    assert is_help_request("?") is True
+    assert is_help_request("/") is True
+    assert is_help_request("show help") is False
+
+
 def test_is_scan_memory_request_matches_scanned_host_phrases():
     assert is_scan_memory_request("list all hosts") is True
     assert is_scan_memory_request("list all scaned hosts") is True
@@ -697,6 +708,24 @@ def test_format_identity_response_lists_capabilities_and_examples():
     assert "`python main.py --simulator nxos --ssh-request \"show vpc\"`" in text
 
 
+def test_format_help_response_lists_modes_and_session_examples():
+    text = format_help_response(
+        {
+            "host": "127.0.0.1",
+            "port": 2222,
+            "user": "admin",
+            "platform_key": "cisco_ios_xe",
+        },
+        mode="ssh",
+    )
+
+    assert "NetAdmin Agent Help" in text
+    assert "ssh mode: send read-only commands directly" in text
+    assert "Target: admin@127.0.0.1:2222" in text
+    assert "Current mode: ssh" in text
+    assert "show interfaces status" in text
+
+
 def test_run_agent_answers_identity_question_without_diagnostics(monkeypatch):
     outputs = []
     cli_app.PENDING_FOLLOW_UP = None
@@ -715,6 +744,26 @@ def test_run_agent_answers_identity_question_without_diagnostics(monkeypatch):
     assert outputs
     assert "NetAdmin Agent Identity" in outputs[-1]
     assert "Capabilities:" in outputs[-1]
+
+
+def test_run_agent_answers_help_without_diagnostics(monkeypatch):
+    outputs = []
+    cli_app.PENDING_FOLLOW_UP = None
+    cli_app.ACTIVE_SSH_SESSION = None
+    cli_app.ACTIVE_INTERACTIVE_MODE = "agent"
+
+    monkeypatch.setattr(cli_app, "print_paged", lambda text, **_kwargs: outputs.append(text))
+    monkeypatch.setattr(
+        cli_app,
+        "execute_skill",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("help should not run a skill")),
+    )
+
+    cli_app.run_agent("?")
+
+    assert outputs
+    assert "NetAdmin Agent Help" in outputs[-1]
+    assert "Modes:" in outputs[-1]
 
 
 def test_format_active_session_status_includes_platform_intents_and_examples():
@@ -771,6 +820,38 @@ def test_build_interactive_prompt_with_session():
         }
     )
     assert prompt == "\nnetadmin-agent[cisco_ios:127.0.0.1:2222]> "
+
+
+def test_ssh_mode_completion_candidates_include_platform_commands():
+    candidates = get_interactive_completion_candidates(
+        {"platform_key": "cisco_ios_xe"},
+        "ssh",
+    )
+
+    assert "show interfaces status" in candidates
+    assert "show interface status" in candidates
+    assert "show mac table" in candidates
+    assert "agent mode" in candidates
+
+
+def test_agent_mode_completion_candidates_include_agent_actions():
+    candidates = get_interactive_completion_candidates(None, "agent")
+
+    assert "connect to " in candidates
+    assert "scan " in candidates
+    assert "ssh mode" in candidates
+
+
+def test_complete_interactive_input_returns_stateful_matches(monkeypatch):
+    monkeypatch.setattr(cli_app, "ACTIVE_INTERACTIVE_MODE", "ssh")
+    monkeypatch.setattr(cli_app, "ACTIVE_SSH_SESSION", {"platform_key": "cisco_ios_xe"})
+
+    first = complete_interactive_input("show int", 0)
+    second = complete_interactive_input("show int", 1)
+
+    assert first.startswith("show int")
+    assert second.startswith("show int")
+    assert first != second
 
 
 def test_run_agent_routes_unparsed_input_to_active_ssh_session(monkeypatch):
@@ -951,6 +1032,12 @@ def test_setup_and_save_interactive_history(monkeypatch, tmp_path):
         def set_history_length(self, length):
             calls.append(("length", length))
 
+        def set_completer(self, completer):
+            calls.append(("completer", completer))
+
+        def parse_and_bind(self, binding):
+            calls.append(("bind", binding))
+
         def write_history_file(self, path):
             calls.append(("write", path))
 
@@ -959,11 +1046,13 @@ def test_setup_and_save_interactive_history(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_history, "readline", FakeReadline())
     monkeypatch.setattr(cli_history, "HISTORY_FILE", history_file)
 
-    assert setup_interactive_history() is True
+    assert setup_interactive_history(completer=lambda *_args: None) is True
     save_interactive_history()
 
     assert ("read", str(history_file)) in calls
     assert ("length", 500) in calls
+    assert any(item[0] == "completer" for item in calls)
+    assert ("bind", "tab: complete") in calls
     assert ("write", str(history_file)) in calls
 
 
