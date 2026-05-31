@@ -8,5 +8,6 @@ __pycache__/
 *.tmp
 .DS_Store
 .netadmin_history
+.netadmin_memory.json
 known_hosts.json
 .codex

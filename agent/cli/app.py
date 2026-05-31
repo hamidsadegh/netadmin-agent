@@ -43,6 +43,21 @@ from .formatting import (
     format_scan_memory,
 )
 from .history import setup_interactive_history
+from .memory import (
+    SessionMemory,
+    apply_remember_command,
+    format_last_result,
+    format_long_term_memory,
+    format_session_memory,
+    is_last_result_request,
+    is_long_term_memory_request,
+    is_memory_request,
+    load_long_term_memory,
+    parse_remember_command,
+    recall_long_term_context,
+    refers_to_last_interface,
+    save_long_term_memory,
+)
 from .parsing import (
     INTERFACE_PATTERN,
     MAC_ADDRESS_PATTERN,
@@ -65,6 +80,8 @@ ACTIVE_SSH_SESSION = None
 ACTIVE_INTERACTIVE_MODE = "agent"
 PENDING_FOLLOW_UP = None
 LAST_SCAN_RESULT = None
+SESSION_MEMORY = SessionMemory()
+LONG_TERM_MEMORY = load_long_term_memory()
 PAGER_MIN_LINES = 12
 SIMULATOR_PLATFORMS = ("ios", "iosxe", "nxos")
 ANSWER_SEPARATOR = "-" * 72
@@ -82,6 +99,12 @@ AGENT_COMPLETIONS = (
     "scan ",
     "connect to ",
     "list all scanned hosts",
+    "show memory",
+    "show remembered devices",
+    "show last result",
+    "remember this device as ",
+    "remember subnet ",
+    "remember preference ",
     "session info",
     "what can I do on this platform?",
     "troubleshoot interface ",
@@ -209,6 +232,40 @@ def ask_model_for_skill(user_input: str) -> str:
 def explain_skill_result(user_input: str, skill_result: dict) -> str:
     prompt = build_result_explainer_prompt(user_input, skill_result)
     return get_provider().generate(prompt, temperature=0.2, max_output_tokens=2048)
+
+
+def remember_interaction(user_input: str, result: dict | None = None, rendered: str | None = None) -> None:
+    SESSION_MEMORY.remember_from_text(
+        user_input,
+        interface_pattern=INTERFACE_PATTERN,
+        mac_pattern=MAC_ADDRESS_PATTERN,
+        vlan_pattern=VLAN_ID_PATTERN,
+    )
+    SESSION_MEMORY.remember_from_result(result)
+    if ACTIVE_SSH_SESSION:
+        SESSION_MEMORY.remember_device(ACTIVE_SSH_SESSION)
+    if rendered:
+        SESSION_MEMORY.remember_result_summary(rendered)
+    summary = None
+    if isinstance(result, dict):
+        summary = result.get("summary")
+        if not summary and isinstance(result.get("result"), dict):
+            summary = result["result"].get("summary")
+    SESSION_MEMORY.remember_turn(user_input, summary or rendered)
+
+
+def format_session_status_with_memory(session: dict | None) -> str:
+    base = format_active_session_status(session)
+    remembered = recall_long_term_context(LONG_TERM_MEMORY, session)
+    if remembered:
+        return f"{base}\n\nMemory:\n- {remembered}"
+    return base
+
+
+def resolve_memory_reference(user_input: str) -> str:
+    if refers_to_last_interface(user_input) and SESSION_MEMORY.last_interface:
+        return f"{user_input} {SESSION_MEMORY.last_interface}"
+    return user_input
 
 
 def execute_skill(skill_name: str, args: dict) -> dict:
@@ -397,6 +454,11 @@ def maybe_run_cisco_playbook(user_input: str):
     lowered = user_input.lower()
     interface_match = INTERFACE_PATTERN.search(user_input)
 
+    if not interface_match and refers_to_last_interface(user_input) and SESSION_MEMORY.last_interface:
+        user_input = f"{user_input} {SESSION_MEMORY.last_interface}"
+        lowered = user_input.lower()
+        interface_match = INTERFACE_PATTERN.search(user_input)
+
     if interface_match and any(word in lowered for word in ("mac", "mac table", "mac address")):
         return run_cisco_interface_mac_table_playbook(
             ACTIVE_SSH_SESSION["client"],
@@ -428,7 +490,7 @@ def maybe_run_cisco_playbook(user_input: str):
             platform_key=platform_key,
         )
 
-    if interface_match and any(word in lowered for word in ("why", "down", "problem", "issue", "troubleshoot")):
+    if interface_match and any(word in lowered for word in ("why", "down", "problem", "issue", "troubleshoot", "log", "logs")):
         return run_cisco_interface_down_playbook(
             ACTIVE_SSH_SESSION["client"],
             host=ACTIVE_SSH_SESSION["host"],
@@ -482,6 +544,7 @@ def run_agent(user_input: str):
 
     skill_call = None
     model_response = None
+    original_user_input = user_input
 
     if ACTIVE_INTERACTIVE_MODE == "ssh" and ACTIVE_SSH_SESSION:
         try:
@@ -494,9 +557,14 @@ def run_agent(user_input: str):
                 platform_key=ACTIVE_SSH_SESSION.get("platform_key"),
             )
             print_raw_ssh_result(result)
+            SESSION_MEMORY.remember_command(result.get("command"))
+            SESSION_MEMORY.remember_device(ACTIVE_SSH_SESSION)
+            SESSION_MEMORY.remember_turn(original_user_input, f"raw SSH command: {result.get('command')}")
         except Exception as exc:
             print_answer(str(exc))
         return
+
+    user_input = resolve_memory_reference(user_input)
 
     if is_casual_greeting(user_input):
         print_answer("Hi. What should we check?")
@@ -510,8 +578,25 @@ def run_agent(user_input: str):
         print_answer(format_identity_response(ACTIVE_SSH_SESSION), force=True)
         return
 
+    if is_memory_request(user_input):
+        print_answer(format_session_memory(SESSION_MEMORY), force=True)
+        return
+
+    remember_command = parse_remember_command(user_input)
+    if remember_command:
+        print_answer(apply_remember_command(remember_command, ACTIVE_SSH_SESSION, LONG_TERM_MEMORY))
+        return
+
+    if is_long_term_memory_request(user_input):
+        print_answer(format_long_term_memory(LONG_TERM_MEMORY), force=True)
+        return
+
+    if is_last_result_request(user_input):
+        print_answer(format_last_result(SESSION_MEMORY), force=True)
+        return
+
     if is_scan_memory_request(user_input):
-        print_answer(format_scan_memory(LAST_SCAN_RESULT), force=True)
+        print_answer(format_scan_memory(SESSION_MEMORY.last_scan or LAST_SCAN_RESULT), force=True)
         return
 
     if PENDING_FOLLOW_UP:
@@ -521,16 +606,18 @@ def run_agent(user_input: str):
             return
         PENDING_FOLLOW_UP = None
     else:
-        skill_call = parse_direct_skill_request(user_input)
+        skill_call = None if (ACTIVE_SSH_SESSION and refers_to_last_interface(user_input)) else parse_direct_skill_request(user_input)
 
     if is_session_info_request(user_input):
-        print_answer(format_active_session_status(ACTIVE_SSH_SESSION), force=True)
+        print_answer(format_session_status_with_memory(ACTIVE_SSH_SESSION), force=True)
         return
 
     if not skill_call and ACTIVE_SSH_SESSION:
         playbook_result = maybe_run_cisco_playbook(user_input)
         if playbook_result:
-            print_answer(format_playbook_result(playbook_result))
+            rendered = format_playbook_result(playbook_result)
+            remember_interaction(original_user_input, playbook_result, rendered)
+            print_answer(rendered)
             return
         try:
             result = run_with_status(
@@ -543,7 +630,9 @@ def run_agent(user_input: str):
                 request=user_input,
                 platform_key=ACTIVE_SSH_SESSION.get("platform_key"),
             )
-            print_answer(format_result_for_fallback(result))
+            rendered = format_result_for_fallback(result)
+            remember_interaction(original_user_input, result, rendered)
+            print_answer(rendered)
             return
         except UnsupportedIntentError as exc:
             print_answer(str(exc))
@@ -580,6 +669,7 @@ def run_agent(user_input: str):
         result = maybe_retry_ssh_with_password(skill_name, args, result)
         if skill_name == "discover_network_hosts":
             LAST_SCAN_RESULT = result
+            SESSION_MEMORY.remember_scan(result)
     except Exception as exc:
         print_answer(f"[red]Skill execution failed:[/red] {exc}\n{skill_call}")
         return
@@ -595,16 +685,22 @@ def run_agent(user_input: str):
         )
         if session.get("success"):
             ACTIVE_SSH_SESSION = session
+            SESSION_MEMORY.remember_device(session)
 
     if skill_name == "run_remote_ssh_diagnostic":
-        print_answer(format_result_for_fallback(result))
+        rendered = format_result_for_fallback(result)
+        remember_interaction(original_user_input, result, rendered)
+        print_answer(rendered)
         return
 
     try:
         explanation = run_with_status("Summarizing result...", explain_skill_result, user_input, result)
+        remember_interaction(original_user_input, result, explanation)
         print_answer(explanation)
     except Exception:
-        print_answer(format_result_for_fallback(result))
+        rendered = format_result_for_fallback(result)
+        remember_interaction(original_user_input, result, rendered)
+        print_answer(rendered)
 
 
 def build_parser() -> argparse.ArgumentParser:

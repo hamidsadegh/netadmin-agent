@@ -1,3 +1,5 @@
+import json
+
 from main import (
     build_interactive_prompt,
     complete_interactive_input,
@@ -9,6 +11,7 @@ from main import (
     format_playbook_result,
     format_result_for_fallback,
     format_scan_memory,
+    format_session_status_with_memory,
     get_interactive_completion_candidates,
     get_history_file,
     get_skill_status_message,
@@ -25,6 +28,7 @@ from main import (
     setup_interactive_history,
 )
 from agent.cli import app as cli_app
+from agent.cli import memory as cli_memory
 from agent.skills.cisco.common import display_interface_name
 from agent.cli import history as cli_history
 from agent.cli import status as cli_status
@@ -905,6 +909,7 @@ def test_run_agent_remembers_last_scan_and_lists_hosts(monkeypatch):
     cli_app.PENDING_FOLLOW_UP = None
     cli_app.ACTIVE_SSH_SESSION = None
     cli_app.LAST_SCAN_RESULT = None
+    cli_app.SESSION_MEMORY = cli_app.SessionMemory()
 
     scan_result = {
         "skill": "discover_network_hosts",
@@ -938,6 +943,7 @@ def test_run_agent_remembers_last_scan_and_lists_hosts(monkeypatch):
     cli_app.run_agent("list all scaned hosts")
 
     assert cli_app.LAST_SCAN_RESULT == scan_result
+    assert cli_app.SESSION_MEMORY.last_scan == scan_result
     assert "scan summary" in outputs[0]
     assert "Last Scan Hosts: 192.168.178.0/24" in outputs[-1]
     assert "192.168.178.49 (homeassistant.fritz.box)" in outputs[-1]
@@ -948,12 +954,152 @@ def test_run_agent_list_hosts_without_scan_uses_memory_message(monkeypatch):
     cli_app.PENDING_FOLLOW_UP = None
     cli_app.ACTIVE_SSH_SESSION = None
     cli_app.LAST_SCAN_RESULT = None
+    cli_app.SESSION_MEMORY = cli_app.SessionMemory()
 
     monkeypatch.setattr(cli_app, "print", lambda *args, **kwargs: outputs.append(" ".join(str(a) for a in args)))
 
     cli_app.run_agent("list all hosts")
 
     assert "No scan results in this session yet" in outputs[-1]
+
+
+def test_run_agent_shows_session_memory(monkeypatch):
+    outputs = []
+    cli_app.PENDING_FOLLOW_UP = None
+    cli_app.ACTIVE_SSH_SESSION = None
+    cli_app.SESSION_MEMORY = cli_app.SessionMemory()
+    cli_app.SESSION_MEMORY.last_interface = "Gi1/0/24"
+    cli_app.SESSION_MEMORY.last_vlan = "20"
+
+    monkeypatch.setattr(cli_app, "print_paged", lambda text, **_kwargs: outputs.append(text))
+
+    cli_app.run_agent("show memory")
+
+    assert "Session Memory" in outputs[-1]
+    assert "Interface: Gi1/0/24" in outputs[-1]
+    assert "VLAN: 20" in outputs[-1]
+
+
+def test_run_agent_remembers_device_to_long_term_json(monkeypatch, tmp_path):
+    outputs = []
+    memory_file = tmp_path / "memory.json"
+    cli_app.PENDING_FOLLOW_UP = None
+    cli_app.LONG_TERM_MEMORY = cli_app.load_long_term_memory(memory_file)
+    cli_app.ACTIVE_SSH_SESSION = {
+        "client": object(),
+        "host": "127.0.0.1",
+        "port": 2222,
+        "user": "admin",
+        "platform_key": "cisco_ios_xe",
+        "session_mode": "cisco_cli",
+    }
+
+    monkeypatch.setattr(cli_app, "print_paged", lambda text, **_kwargs: outputs.append(text))
+    original_save = cli_memory.save_long_term_memory
+    monkeypatch.setattr(cli_memory, "save_long_term_memory", lambda memory: original_save(memory, memory_file))
+
+    cli_app.run_agent("remember this device as lab access")
+
+    saved = json.loads(memory_file.read_text())
+    assert saved["devices"]["127.0.0.1"]["label"] == "lab access"
+    assert saved["devices"]["127.0.0.1"]["user"] == "admin"
+    assert "Remembered device 127.0.0.1 as lab access" in outputs[-1]
+
+
+def test_run_agent_shows_long_term_memory(monkeypatch):
+    outputs = []
+    cli_app.PENDING_FOLLOW_UP = None
+    cli_app.ACTIVE_SSH_SESSION = None
+    cli_app.LONG_TERM_MEMORY = {
+        "version": 1,
+        "devices": {"127.0.0.1": {"label": "lab access", "port": 2222, "platform_key": "cisco_ios_xe", "user": "admin"}},
+        "subnets": {"192.168.178.0/24": {"label": "home lab", "cidr": "192.168.178.0/24"}},
+        "preferences": {"output": "short"},
+    }
+
+    monkeypatch.setattr(cli_app, "print_paged", lambda text, **_kwargs: outputs.append(text))
+
+    cli_app.run_agent("show remembered devices")
+
+    assert "Long-Term Memory" in outputs[-1]
+    assert "lab access: 127.0.0.1:2222" in outputs[-1]
+    assert "home lab: 192.168.178.0/24" in outputs[-1]
+    assert "output: short" in outputs[-1]
+
+
+def test_session_info_includes_recalled_long_term_device(monkeypatch):
+    cli_app.LONG_TERM_MEMORY = {
+        "version": 1,
+        "devices": {"127.0.0.1": {"label": "lab access"}},
+        "subnets": {},
+        "preferences": {},
+    }
+
+    text = format_session_status_with_memory(
+        {
+            "host": "127.0.0.1",
+            "port": 2222,
+            "user": "admin",
+            "platform_key": "cisco_ios_xe",
+            "session_mode": "cisco_cli",
+            "prepared": True,
+        }
+    )
+
+    assert "Memory:" in text
+    assert "Remembered device: lab access" in text
+
+
+def test_run_agent_shows_last_result(monkeypatch):
+    outputs = []
+    cli_app.PENDING_FOLLOW_UP = None
+    cli_app.ACTIVE_SSH_SESSION = None
+    cli_app.SESSION_MEMORY = cli_app.SessionMemory()
+    cli_app.SESSION_MEMORY.last_result_summary = "Last useful summary"
+
+    monkeypatch.setattr(cli_app, "print_paged", lambda text, **_kwargs: outputs.append(text))
+
+    cli_app.run_agent("show last result")
+
+    assert "Last Result:" in outputs[-1]
+    assert "Last useful summary" in outputs[-1]
+
+
+def test_run_agent_uses_remembered_interface_for_same_interface_logs(monkeypatch):
+    outputs = []
+    calls = []
+    cli_app.PENDING_FOLLOW_UP = None
+    cli_app.ACTIVE_INTERACTIVE_MODE = "agent"
+    cli_app.SESSION_MEMORY = cli_app.SessionMemory()
+    cli_app.ACTIVE_SSH_SESSION = {
+        "client": object(),
+        "host": "127.0.0.1",
+        "port": 2222,
+        "user": "admin",
+        "platform_key": "cisco_ios_xe",
+    }
+
+    def fake_down_playbook(client, host, user, interface_name, platform_key=None):
+        calls.append(interface_name)
+        return {
+            "skill": "cisco_interface_down_playbook",
+            "interface": interface_name,
+            "host": host,
+            "user": user,
+            "platform_key": platform_key,
+            "summary": f"checked {interface_name}",
+            "matches": {"interfaces": [{"port": interface_name, "status": "notconnect", "vlan": "20"}]},
+        }
+
+    monkeypatch.setattr(cli_app, "run_cisco_interface_down_playbook", fake_down_playbook)
+    monkeypatch.setattr(cli_app, "print_paged", lambda text, **_kwargs: outputs.append(text))
+
+    cli_app.run_agent("why is Gi1/0/24 down?")
+    cli_app.run_agent("check logs for same interface")
+
+    assert calls == ["Gi1/0/24", "Gi1/0/24"]
+    assert cli_app.SESSION_MEMORY.last_interface == "Gi1/0/24"
+    assert "checked Gi1/0/24" in cli_app.SESSION_MEMORY.last_result_summary
 
 
 def test_print_paged_prompts_for_long_output(monkeypatch):
