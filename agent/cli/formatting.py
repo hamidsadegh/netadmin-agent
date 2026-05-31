@@ -1,7 +1,10 @@
 import json
+from pathlib import Path
 
 from agent.skills.cisco.common import display_interface_name
 from agent.tools import get_supported_intents
+
+IDENTITY_FILE = Path(__file__).resolve().parents[2] / "IDENTITY.md"
 
 
 PLATFORM_EXAMPLES = {
@@ -42,6 +45,50 @@ PLATFORM_EXAMPLES = {
         "show logs",
     ],
 }
+
+
+def _read_identity_file() -> str:
+    try:
+        return IDENTITY_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return (
+            "# NetAdmin Agent Identity\n\n"
+            "I am NetAdmin Agent, a safety-focused network administration assistant "
+            "for read-only diagnostics."
+        )
+
+
+def _strip_markdown_heading(line: str) -> str:
+    return line.lstrip("#").strip()
+
+
+def format_identity_response(session: dict | None = None) -> str:
+    identity = _read_identity_file()
+    lines = []
+    for line in identity.splitlines():
+        if line.startswith("# "):
+            lines.append(_strip_markdown_heading(line))
+        elif line.startswith("## "):
+            lines.extend(["", _strip_markdown_heading(line) + ":"])
+        else:
+            lines.append(line)
+
+    if session:
+        platform_key = session.get("platform_key") or "unknown"
+        lines.extend(
+            [
+                "",
+                "Current session:",
+                f"- Target: {session.get('user')}@{session.get('host')}:{session.get('port') or 22}",
+                f"- Platform: {platform_key}",
+                f"- Mode: {session.get('session_mode') or 'unknown'}",
+            ]
+        )
+        supported_intents = get_supported_intents(session.get("platform_key"))
+        if supported_intents:
+            lines.append(f"- Supported intents now: {', '.join(supported_intents)}")
+
+    return "\n".join(lines).strip()
 
 
 def format_result_for_fallback(result: dict) -> str:
@@ -206,7 +253,68 @@ def format_result_for_fallback(result: dict) -> str:
     return json.dumps(result, indent=2)
 
 
+def format_scan_memory(scan_result: dict | None) -> str:
+    if not scan_result:
+        return "No scan results in this session yet. Run a scan first, for example: scan 192.168.178.0/24"
+
+    hosts = scan_result.get("hosts") or {}
+    cidr = scan_result.get("cidr") or "unknown scope"
+    ports = scan_result.get("ports")
+    lines = [
+        f"Last Scan Hosts: {cidr}",
+        f"Hosts: {len(hosts)}",
+        f"Ports: {ports if ports else 'ping-only'}",
+    ]
+    if not hosts:
+        lines.extend(["", "No hosts were found in the last scan."])
+        return "\n".join(lines)
+
+    lines.append("")
+    for ip in sorted(hosts):
+        info = hosts.get(ip, {})
+        hostname = info.get("hostname")
+        port_entries = []
+        for item in info.get("ports", []):
+            port = item.get("port")
+            if port is None:
+                continue
+            service = item.get("service")
+            state = item.get("state")
+            label = str(port)
+            if service:
+                label = f"{label}/{service}"
+            if state and state not in {"open", "unknown"}:
+                label = f"{label} {state}"
+            port_entries.append(label)
+        suffix = f" ({hostname})" if hostname else ""
+        ports_text = ", ".join(port_entries) if port_entries else "no open scanned ports"
+        alive = "alive" if info.get("alive_icmp") else "seen by port scan"
+        lines.append(f"- {ip}{suffix}: {alive}; {ports_text}")
+    return "\n".join(lines)
+
+
 def format_playbook_result(result: dict) -> str:
+    if result.get("skill") == "cisco_mac_lookup_playbook":
+        mac = result.get("mac") or "MAC"
+        matches = result.get("matches") or []
+        lines = [
+            f"MAC Lookup: {mac}",
+            f"Host: {result.get('user')}@{result.get('host')}",
+        ]
+        if result.get("platform_key"):
+            lines.append(f"Platform: {result.get('platform_key')}")
+        lines.extend(["", "Findings:", f"- Entries: {len(matches)}", "", "Entries:"])
+        if matches:
+            lines.extend(
+                f"- VLAN {entry.get('vlan', 'unknown')} {entry.get('mac', 'unknown')} {entry.get('type', '').strip() or 'dynamic'} on {display_interface_name(entry.get('port')) or 'unknown'}"
+                for entry in matches[:10]
+            )
+            if len(matches) > 10:
+                lines.append(f"- ... and {len(matches) - 10} more")
+        else:
+            lines.append("- No matching MAC entries found.")
+        return "\n".join(lines)
+
     if result.get("skill") == "cisco_interface_mac_table_playbook":
         interface = display_interface_name(result.get("interface")) or "interface"
         matches = result.get("matches") or []
@@ -443,7 +551,7 @@ def format_active_session_status(session: dict | None) -> str:
     return "\n".join(lines)
 
 
-def build_interactive_prompt(session: dict | None) -> str:
+def build_interactive_prompt(session: dict | None, mode: str = "agent") -> str:
     if not session:
         return "\nnetadmin-agent> "
 
@@ -451,4 +559,5 @@ def build_interactive_prompt(session: dict | None) -> str:
     port = session.get("port") or 22
     platform_key = session.get("platform_key") or "unknown"
     target = f"{host}:{port}" if int(port) != 22 else str(host)
-    return f"\nnetadmin-agent[{platform_key}:{target}]> "
+    mode_prefix = "ssh:" if mode == "ssh" else ""
+    return f"\nnetadmin-agent[{mode_prefix}{platform_key}:{target}]> "

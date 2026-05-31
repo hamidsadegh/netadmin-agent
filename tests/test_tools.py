@@ -569,6 +569,42 @@ def test_detect_platform_on_ssh_session_prepares_cisco_terminal_length_before_sh
     assert metadata["preparation_results"][0]["command"] == "terminal length 0"
 
 
+def test_validate_raw_ssh_command_allows_cisco_show_and_blocks_config():
+    assert tools.validate_raw_ssh_command("show version", platform_key="cisco_ios_xe") == "show version"
+    with pytest.raises(ValueError):
+        tools.validate_raw_ssh_command("configure terminal", platform_key="cisco_ios_xe")
+
+
+def test_run_raw_command_on_ssh_session_returns_exact_stdout():
+    class FakeChannel:
+        def recv_exit_status(self):
+            return 0
+
+    class FakeStream:
+        def __init__(self, text):
+            self._text = text.encode()
+            self.channel = FakeChannel()
+
+        def read(self):
+            return self._text
+
+    class FakeClient:
+        def exec_command(self, command, timeout=None):
+            assert command == "show version"
+            return None, FakeStream("line 1\r\nline 2\n"), FakeStream("")
+
+    result = tools.run_raw_command_on_ssh_session(
+        FakeClient(),
+        host="192.168.1.10",
+        user="admin",
+        command="show version",
+        platform_key="cisco_ios_xe",
+    )
+
+    assert result["success"] is True
+    assert result["stdout"] == "line 1\r\nline 2\n"
+
+
 def test_summarize_remote_result_for_rhel_memory():
     summary = tools.summarize_remote_result(
         "rhel",

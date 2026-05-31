@@ -13,7 +13,19 @@ from agent.platforms import detect_platform
 
 from .intents import infer_intent, resolve_remote_command
 from .network import clean_remote_output
-from .safety import validate_host, validate_ssh_port, validate_ssh_user
+from .safety import validate_host, validate_read_only_command, validate_ssh_port, validate_ssh_user
+
+
+CISCO_RAW_READ_ONLY_PREFIXES = (
+    "show",
+    "sh",
+    "terminal length",
+    "terminal width",
+    "ping",
+    "traceroute",
+    "dir",
+    "more",
+)
 
 
 def _best_effort_resolve_command(
@@ -389,6 +401,63 @@ def run_command_on_ssh_session(
             "parsed": None,
             "target": target,
             "auth_failed": auth_failed,
+            "platform_key": platform_key,
+        }
+
+
+def validate_raw_ssh_command(command: str, platform_key: str | None = None) -> str:
+    selected_command = validate_read_only_command(command)
+    lowered = selected_command.lower()
+    if platform_key in {"cisco_ios", "cisco_ios_xe", "cisco_nxos"}:
+        if not any(lowered == prefix or lowered.startswith(f"{prefix} ") for prefix in CISCO_RAW_READ_ONLY_PREFIXES):
+            raise ValueError("Raw SSH mode only allows read-only Cisco commands like show, ping, traceroute, dir, and terminal length/width")
+    return selected_command
+
+
+def run_raw_command_on_ssh_session(
+    client,
+    host: str,
+    user: str,
+    command: str,
+    port: int | None = None,
+    platform_key: str | None = None,
+) -> dict:
+    host = validate_host(host)
+    user = validate_ssh_user(user)
+    port = validate_ssh_port(port)
+    selected_command = validate_raw_ssh_command(command, platform_key=platform_key)
+    target = f"{user}@{host}:{port}" if port != 22 else f"{user}@{host}"
+
+    try:
+        _stdin, stdout, stderr = client.exec_command(selected_command, timeout=SSH_COMMAND_TIMEOUT)
+        stdout_text = stdout.read().decode(errors="replace")
+        stderr_text = stderr.read().decode(errors="replace")
+        return_code = stdout.channel.recv_exit_status()
+        return {
+            "tool": "execute_raw_ssh_command",
+            "host": host,
+            "port": port,
+            "user": user,
+            "command": selected_command,
+            "success": return_code == 0,
+            "return_code": return_code,
+            "stdout": stdout_text,
+            "stderr": stderr_text,
+            "target": target,
+            "platform_key": platform_key,
+        }
+    except Exception as exc:
+        return {
+            "tool": "execute_raw_ssh_command",
+            "host": host,
+            "port": port,
+            "user": user,
+            "command": selected_command,
+            "success": False,
+            "error": str(exc),
+            "stdout": "",
+            "stderr": "",
+            "target": target,
             "platform_key": platform_key,
         }
 

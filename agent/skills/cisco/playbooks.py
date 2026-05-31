@@ -121,6 +121,10 @@ def _summarize_vlan_delta(left: set[int], right: set[int], limit: int = 8) -> st
     return preview if len(values) <= limit else f"{preview}, +{len(values) - limit} more"
 
 
+def _normalize_mac_address(mac: str | None) -> str:
+    return "".join(char.lower() for char in str(mac or "") if char.isalnum())
+
+
 def _analyze_trunk_vlans(trunk_entries: list[dict], is_trunk: bool) -> dict:
     if not trunk_entries:
         return {
@@ -300,8 +304,8 @@ def run_cisco_mac_lookup_playbook(client, host: str, user: str, mac: str, platfo
         client, host=host, user=user, request="show mac table", platform_key=platform_key
     )
     parsed = ((mac_result.get("result") or {}).get("parsed") or {}).get("mac_table", [])
-    normalized = mac.lower().replace(":", "").replace("-", "")
-    matches = [entry for entry in parsed if entry.get("mac", "").replace(".", "") == normalized]
+    normalized = _normalize_mac_address(mac)
+    matches = [entry for entry in parsed if _normalize_mac_address(entry.get("mac")) == normalized]
     return {
         "skill": "cisco_mac_lookup_playbook",
         "host": host,

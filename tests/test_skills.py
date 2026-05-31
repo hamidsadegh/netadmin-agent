@@ -133,6 +133,37 @@ def test_run_cisco_interface_mac_table_playbook_filters_by_interface(monkeypatch
     assert "Found 1 MAC table entry on Gi1/0/6" in result["summary"]
 
 
+def test_run_cisco_mac_lookup_playbook_matches_dotted_static_cpu_mac(monkeypatch):
+    monkeypatch.setattr(
+        playbooks,
+        "run_remote_ssh_diagnostic_on_session",
+        lambda client, host, user, command=None, request=None, platform_key=None: {
+            "skill": "run_remote_ssh_diagnostic",
+            "status": "ok",
+            "result": {
+                "parsed": {
+                    "mac_table": [
+                        {"mac": "0100.0ccc.cccd", "port": "CPU", "vlan": "All", "type": "STATIC"},
+                    ]
+                }
+            },
+        },
+    )
+
+    result = skills.run_cisco_mac_lookup_playbook(
+        DummyClient(),
+        host="10.0.0.10",
+        user="admin",
+        mac="0100.0ccc.cccd",
+        platform_key="cisco_ios",
+    )
+
+    assert result["matches"] == [
+        {"mac": "0100.0ccc.cccd", "port": "CPU", "vlan": "All", "type": "STATIC"}
+    ]
+    assert "Found 1 matching MAC table entries" in result["summary"]
+
+
 def test_run_cisco_interface_check_playbook_propagates_step_failure(monkeypatch):
     responses = {
         "show interfaces": {

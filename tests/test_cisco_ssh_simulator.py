@@ -1,4 +1,5 @@
 from agent import tools
+from agent.cli.app import build_parser, run_simulator_ssh_diagnostic
 from agent.skills import run_remote_ssh_diagnostic
 from demos.simulator_integration_demo import run_demo
 from simulators.cisco_ssh_simulator import CiscoCommandSimulator, SimulatorServer, PROFILES
@@ -147,3 +148,21 @@ def test_simulator_integration_demo_runs_for_ios():
     assert result["ok"] is True
     assert result["detected_platform"] == "cisco_ios"
     assert result["one_shot"]["status"] == "ok"
+
+
+def test_cli_parser_accepts_simulator_backend():
+    args = build_parser().parse_args(["--simulator", "iosxe", "--ssh-request", "show logs"])
+
+    assert args.simulator == "iosxe"
+    assert args.ssh_request == "show logs"
+
+
+def test_run_simulator_ssh_diagnostic_uses_real_ssh_path_for_nxos():
+    result = run_simulator_ssh_diagnostic("nxos", request="show vpc")
+
+    assert result["status"] == "ok"
+    assert result["platform_key"] == "cisco_nxos"
+    assert result["simulator"]["platform"] == "nxos"
+    assert result["simulator"]["host"] == "127.0.0.1"
+    assert result["result"]["command"] == "show vpc"
+    assert result["result"]["summary"].startswith("Collected vPC state")

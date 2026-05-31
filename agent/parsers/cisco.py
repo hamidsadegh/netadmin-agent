@@ -97,14 +97,20 @@ def parse_show_mac_address_table(text: str) -> list[dict]:
         parts = line.split()
         port = parts[-1] if parts else None
         vlan = None
+        entry_type = None
         for token in parts:
-            if token.isdigit():
+            if token.isdigit() or token.lower() == "all":
                 vlan = token
+                break
+        for token in parts:
+            if token.lower() in {"static", "dynamic", "secure", "self"}:
+                entry_type = token.upper()
                 break
         entries.append(
             {
                 "mac": mac_match.group(0).lower(),
                 "vlan": vlan,
+                "type": entry_type,
                 "port": port,
                 "raw": line.strip(),
             }

@@ -39,10 +39,12 @@ from .ssh import (
     get_paramiko,
     parse_cisco_result,
     prepare_platform_session,
+    run_raw_command_on_ssh_session,
     run_command_on_ssh_session,
     summarize_cisco_result,
     summarize_remote_result,
     summarize_rhel_result,
+    validate_raw_ssh_command,
 )
 
 __all__ = [
@@ -72,6 +74,7 @@ __all__ = [
     "resolve_remote_command",
     "reverse_dns_lookup",
     "run_command_on_ssh_session",
+    "run_raw_command_on_ssh_session",
     "run_masscan_icmp",
     "run_masscan_ports",
     "run_nmap_host_discovery",
@@ -87,6 +90,7 @@ __all__ = [
     "validate_host",
     "validate_ports",
     "validate_read_only_command",
+    "validate_raw_ssh_command",
     "validate_scan_target",
     "validate_ssh_port",
     "validate_ssh_user",

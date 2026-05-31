@@ -198,7 +198,17 @@ It is designed to match the agent's current `exec_command()` SSH workflow, inclu
 
 ## Simulator integration demo
 
-For a one-command smoke test that starts the simulator and runs the agent against it:
+For day-to-day agent development, the main CLI can start a simulator backend for one command:
+
+```bash
+python main.py --simulator ios --ssh-request "show interfaces"
+python main.py --simulator iosxe --ssh-request "show logs"
+python main.py --simulator nxos --ssh-request "show vpc"
+```
+
+The CLI starts the fake device on a random local port, uses the default simulator credentials, runs through the normal SSH diagnostic path, prints JSON, and stops the simulator.
+
+For a broader smoke test that starts the simulator and runs several checks against it:
 
 ```bash
 python demos/simulator_integration_demo.py --platform ios --pretty

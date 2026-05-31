@@ -1,6 +1,8 @@
 import argparse
 import getpass
+import importlib
 import json
+from pathlib import Path
 import shutil
 import sys
 import termios
@@ -28,13 +30,15 @@ from agent.skills import (
     run_remote_ssh_diagnostic_on_session,
     scan_host_tcp_ports,
 )
-from agent.tools import UnsupportedIntentError, connect_ssh_session
+from agent.tools import UnsupportedIntentError, connect_ssh_session, run_raw_command_on_ssh_session
 
 from .formatting import (
     build_interactive_prompt,
     format_active_session_status,
+    format_identity_response,
     format_playbook_result,
     format_result_for_fallback,
+    format_scan_memory,
 )
 from .history import setup_interactive_history
 from .parsing import (
@@ -44,6 +48,9 @@ from .parsing import (
     complete_follow_up,
     detect_ambiguous_follow_up,
     extract_json,
+    is_casual_greeting,
+    is_identity_request,
+    is_scan_memory_request,
     is_session_info_request,
     normalize_skill_call,
     parse_direct_skill_request,
@@ -52,8 +59,12 @@ from .status import get_skill_status_message, run_with_status
 
 
 ACTIVE_SSH_SESSION = None
+ACTIVE_INTERACTIVE_MODE = "agent"
 PENDING_FOLLOW_UP = None
+LAST_SCAN_RESULT = None
 PAGER_MIN_LINES = 12
+SIMULATOR_PLATFORMS = ("ios", "iosxe", "nxos")
+ANSWER_SEPARATOR = "-" * 72
 
 
 def _read_pager_key() -> str:
@@ -95,6 +106,14 @@ def print_paged(text: str, *, force: bool = False) -> None:
             break
 
 
+def _with_answer_separator(text: str) -> str:
+    return f"{str(text).rstrip()}\n{ANSWER_SEPARATOR}"
+
+
+def print_answer(text: str, *, force: bool = False) -> None:
+    print_paged(_with_answer_separator(text), force=force)
+
+
 def get_client():
     return get_provider().get_client()
 
@@ -121,14 +140,104 @@ def execute_skill(skill_name: str, args: dict) -> dict:
     raise ValueError(f"Unknown skill requested: {skill_name}")
 
 
+def _load_simulator_server():
+    try:
+        return importlib.import_module("simulators.cisco_ssh_simulator").SimulatorServer
+    except ImportError:
+        workspace_root = Path(__file__).resolve().parents[3]
+        if str(workspace_root) not in sys.path:
+            sys.path.insert(0, str(workspace_root))
+        try:
+            return importlib.import_module("simulators.cisco_ssh_simulator").SimulatorServer
+        except ImportError as exc:
+            raise RuntimeError(
+                "Cisco simulator package not found. Keep the sibling simulators repo at ../simulators "
+                "or install it on PYTHONPATH."
+            ) from exc
+
+
+def run_simulator_ssh_diagnostic(
+    platform: str,
+    command: str | None = None,
+    request: str | None = None,
+) -> dict:
+    if platform not in SIMULATOR_PLATFORMS:
+        raise ValueError(f"Unsupported simulator platform: {platform}")
+
+    SimulatorServer = _load_simulator_server()
+    server = SimulatorServer(platform=platform, port=0).start()
+    try:
+        result = run_remote_ssh_diagnostic(
+            host="127.0.0.1",
+            port=server.port,
+            user=server.username,
+            password=server.password,
+            command=command,
+            request=request,
+        )
+        result["simulator"] = {
+            "platform": platform,
+            "host": "127.0.0.1",
+            "port": server.port,
+            "user": server.username,
+        }
+        return result
+    finally:
+        server.stop()
+
+
 def close_active_ssh_session() -> None:
-    global ACTIVE_SSH_SESSION
+    global ACTIVE_SSH_SESSION, ACTIVE_INTERACTIVE_MODE
     if ACTIVE_SSH_SESSION and ACTIVE_SSH_SESSION.get("client"):
         try:
             ACTIVE_SSH_SESSION["client"].close()
         except Exception:
             pass
     ACTIVE_SSH_SESSION = None
+    ACTIVE_INTERACTIVE_MODE = "agent"
+
+
+def handle_interactive_control_command(question: str) -> str | None:
+    global ACTIVE_INTERACTIVE_MODE
+    lowered = question.lower()
+    if lowered in ["agent mode", "agent", "/agent"]:
+        ACTIVE_INTERACTIVE_MODE = "agent"
+        print_answer("Agent mode enabled.")
+        return "handled"
+    if lowered in ["ssh mode", "raw mode", "normal mode", "no agent mode", "/ssh", "/raw"]:
+        if not ACTIVE_SSH_SESSION:
+            print_answer("No active SSH session. Connect to a host first.")
+            return "handled"
+        ACTIVE_INTERACTIVE_MODE = "ssh"
+        print_answer("SSH mode enabled. Commands are sent directly as read-only SSH commands.")
+        return "handled"
+    if lowered in ["exit", "quit"]:
+        if ACTIVE_SSH_SESSION:
+            close_active_ssh_session()
+            print_answer("SSH session closed.")
+            return "handled"
+        return "quit"
+    if lowered in ["disconnect", "close ssh", "logout"]:
+        close_active_ssh_session()
+        print_answer("SSH session closed.")
+        return "handled"
+    if question.startswith("\x1b") or not question:
+        return "handled"
+    return None
+
+
+def print_raw_ssh_result(result: dict) -> None:
+    stdout_text = result.get("stdout") or ""
+    stderr_text = result.get("stderr") or ""
+    error_text = result.get("error")
+    if stdout_text:
+        sys.stdout.write(stdout_text)
+        sys.stdout.flush()
+    if stderr_text:
+        sys.stderr.write(stderr_text)
+        sys.stderr.flush()
+    if not stdout_text and not stderr_text and error_text:
+        print_answer(f"SSH command failed: {error_text}")
 
 
 def maybe_complete_ssh_args(skill_name: str, args: dict) -> dict:
@@ -283,28 +392,55 @@ def maybe_run_cisco_playbook(user_input: str):
 
 
 def run_agent(user_input: str):
-    global ACTIVE_SSH_SESSION, PENDING_FOLLOW_UP
+    global ACTIVE_SSH_SESSION, PENDING_FOLLOW_UP, LAST_SCAN_RESULT
 
     skill_call = None
     model_response = None
 
+    if ACTIVE_INTERACTIVE_MODE == "ssh" and ACTIVE_SSH_SESSION:
+        try:
+            result = run_raw_command_on_ssh_session(
+                ACTIVE_SSH_SESSION["client"],
+                host=ACTIVE_SSH_SESSION["host"],
+                port=ACTIVE_SSH_SESSION.get("port"),
+                user=ACTIVE_SSH_SESSION["user"],
+                command=user_input,
+                platform_key=ACTIVE_SSH_SESSION.get("platform_key"),
+            )
+            print_raw_ssh_result(result)
+        except Exception as exc:
+            print_answer(str(exc))
+        return
+
+    if is_casual_greeting(user_input):
+        print_answer("Hi. What should we check?")
+        return
+
+    if is_identity_request(user_input):
+        print_answer(format_identity_response(ACTIVE_SSH_SESSION), force=True)
+        return
+
+    if is_scan_memory_request(user_input):
+        print_answer(format_scan_memory(LAST_SCAN_RESULT), force=True)
+        return
+
     if PENDING_FOLLOW_UP:
         skill_call = complete_follow_up(PENDING_FOLLOW_UP, user_input)
         if not skill_call:
-            print(PENDING_FOLLOW_UP.get("question") or "I still need a bit more detail.")
+            print_answer(PENDING_FOLLOW_UP.get("question") or "I still need a bit more detail.")
             return
         PENDING_FOLLOW_UP = None
     else:
         skill_call = parse_direct_skill_request(user_input)
 
     if is_session_info_request(user_input):
-        print_paged(format_active_session_status(ACTIVE_SSH_SESSION), force=True)
+        print_answer(format_active_session_status(ACTIVE_SSH_SESSION), force=True)
         return
 
     if not skill_call and ACTIVE_SSH_SESSION:
         playbook_result = maybe_run_cisco_playbook(user_input)
         if playbook_result:
-            print_paged(format_playbook_result(playbook_result))
+            print_answer(format_playbook_result(playbook_result))
             return
         try:
             result = run_with_status(
@@ -317,13 +453,13 @@ def run_agent(user_input: str):
                 request=user_input,
                 platform_key=ACTIVE_SSH_SESSION.get("platform_key"),
             )
-            print_paged(format_result_for_fallback(result))
+            print_answer(format_result_for_fallback(result))
             return
         except UnsupportedIntentError as exc:
-            print(str(exc))
+            print_answer(str(exc))
             return
         except ValueError as exc:
-            print(f"I couldn't map that to a safe SSH diagnostic command yet: {exc}")
+            print_answer(f"I couldn't map that to a safe SSH diagnostic command yet: {exc}")
             return
         except Exception:
             close_active_ssh_session()
@@ -332,19 +468,19 @@ def run_agent(user_input: str):
         follow_up = detect_ambiguous_follow_up(user_input)
         if follow_up:
             PENDING_FOLLOW_UP = follow_up
-            print(follow_up["question"])
+            print_answer(follow_up["question"])
             return
 
     if not skill_call:
         try:
             model_response = run_with_status("Planning action...", ask_model_for_skill, user_input)
         except Exception as exc:
-            print(f"[red]Model routing failed:[/red] {exc}")
+            print_answer(f"[red]Model routing failed:[/red] {exc}")
             return
         skill_call = normalize_skill_call(extract_json(model_response))
 
     if not skill_call:
-        print(model_response or "I couldn't determine a safe action for that request.")
+        print_answer(model_response or "I couldn't determine a safe action for that request.")
         return
 
     try:
@@ -352,9 +488,10 @@ def run_agent(user_input: str):
         args = maybe_complete_ssh_args(skill_name, skill_call.get("args", {}))
         result = run_with_status(get_skill_status_message(skill_name), execute_skill, skill_name, args)
         result = maybe_retry_ssh_with_password(skill_name, args, result)
+        if skill_name == "discover_network_hosts":
+            LAST_SCAN_RESULT = result
     except Exception as exc:
-        print(f"[red]Skill execution failed:[/red] {exc}")
-        print(skill_call)
+        print_answer(f"[red]Skill execution failed:[/red] {exc}\n{skill_call}")
         return
 
     if skill_name == "run_remote_ssh_diagnostic" and result.get("status") == "ok" and not ACTIVE_SSH_SESSION:
@@ -370,14 +507,14 @@ def run_agent(user_input: str):
             ACTIVE_SSH_SESSION = session
 
     if skill_name == "run_remote_ssh_diagnostic":
-        print_paged(format_result_for_fallback(result))
+        print_answer(format_result_for_fallback(result))
         return
 
     try:
         explanation = run_with_status("Summarizing result...", explain_skill_result, user_input, result)
-        print_paged(explanation)
+        print_answer(explanation)
     except Exception:
-        print_paged(format_result_for_fallback(result))
+        print_answer(format_result_for_fallback(result))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -394,6 +531,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ssh-user", help="SSH username for --ssh-host")
     parser.add_argument("--ssh-cmd", help="Explicit safe read-only SSH command to run")
     parser.add_argument("--ssh-request", help="Natural-language SSH diagnostic request to infer a safe command")
+    parser.add_argument(
+        "--simulator",
+        choices=SIMULATOR_PLATFORMS,
+        help="Start a local Cisco SSH simulator and run --ssh-cmd or --ssh-request against it",
+    )
     return parser
 
 
@@ -415,6 +557,21 @@ def main() -> None:
                     scanner=args.scanner,
                     scan_profile=args.scan_profile,
                     service_detection=args.service_detection,
+                ),
+                indent=2,
+            )
+        )
+        return
+
+    if args.simulator:
+        print(
+            json.dumps(
+                run_with_status(
+                    "Running local Cisco simulator diagnostic...",
+                    run_simulator_ssh_diagnostic,
+                    args.simulator,
+                    command=args.ssh_cmd,
+                    request=args.ssh_request,
                 ),
                 indent=2,
             )
@@ -463,20 +620,17 @@ def main() -> None:
 
     while True:
         try:
-            question = input(build_interactive_prompt(ACTIVE_SSH_SESSION)).strip()
+            question = input(build_interactive_prompt(ACTIVE_SSH_SESSION, ACTIVE_INTERACTIVE_MODE)).strip()
         except KeyboardInterrupt:
             print("\nExiting NetAdmin Agent.")
             break
         except EOFError:
             print("\nExiting NetAdmin Agent.")
             break
-        if question.lower() in ["exit", "quit"]:
+        control_action = handle_interactive_control_command(question)
+        if control_action == "quit":
             break
-        if question.lower() in ["disconnect", "close ssh", "logout"]:
-            close_active_ssh_session()
-            print("SSH session closed.")
-            continue
-        if question.startswith("\x1b") or not question:
+        if control_action == "handled":
             continue
         run_agent(question)
 

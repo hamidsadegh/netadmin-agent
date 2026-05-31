@@ -58,9 +58,16 @@ def test_parse_show_vlan_brief():
 def test_parse_show_mac_address_table():
     parsed = parse_show_mac_address_table(
         " 10  0011.2233.4455 DYNAMIC Gi1/0/1\n"
+        "All 0100.0ccc.cccd STATIC CPU\n"
     )
     assert parsed[0]["mac"] == "0011.2233.4455"
+    assert parsed[0]["vlan"] == "10"
+    assert parsed[0]["type"] == "DYNAMIC"
     assert parsed[0]["port"] == "Gi1/0/1"
+    assert parsed[1]["mac"] == "0100.0ccc.cccd"
+    assert parsed[1]["vlan"] == "All"
+    assert parsed[1]["type"] == "STATIC"
+    assert parsed[1]["port"] == "CPU"
 
 
 def test_parse_show_port_channel_summary_ios_members():

@@ -36,19 +36,47 @@ SESSION_INFO_HINTS = (
     "what platform",
     "supported intents",
     "examples",
-    "abilities",
-    "ability",
-    "what can i",
-    "what i can",
-    "what can user",
-    "what ability",
-    "what can you do here",
-    "what can you do",
     "what can you do on this host",
     "what can i do on this platform",
     "what i can on this platform",
     "what i can on this paltform",
 )
+SCAN_MEMORY_HINTS = (
+    "list all hosts",
+    "list hosts",
+    "list scanned hosts",
+    "list scaned hosts",
+    "list all scanned hosts",
+    "list all scaned hosts",
+    "show scanned hosts",
+    "show scaned hosts",
+    "show last scan",
+    "last scan",
+    "scan results",
+)
+IDENTITY_HINTS = (
+    "who are you",
+    "what are you",
+    "introduce yourself",
+    "tell me about yourself",
+    "how can you help",
+    "how can you help me",
+    "what can you do",
+    "what do you do",
+    "what can i do",
+    "what i can",
+    "what can user",
+    "what ability",
+    "abilities",
+    "ability",
+    "help",
+)
+CASUAL_GREETINGS = {
+    "hey",
+    "hi",
+    "hello",
+    "hallo",
+}
 RESERVED_HOST_TOKENS = {
     "and",
     "check",
@@ -152,6 +180,12 @@ def _looks_like_host(candidate: str | None) -> bool:
     return not lowered.isdigit()
 
 
+def _looks_like_bare_host(candidate: str | None) -> bool:
+    if not _looks_like_host(candidate):
+        return False
+    return any(char.isdigit() for char in candidate) or "." in candidate or "-" in candidate
+
+
 def _extract_hostname_candidate(text: str, patterns: tuple[str, ...]) -> str | None:
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
@@ -214,6 +248,26 @@ def _extract_scan_profile_hint(lowered: str) -> str | None:
     return None
 
 
+def _has_ssh_intent(text: str) -> bool:
+    lowered = text.lower()
+    if re.search(r"\bssh\b", lowered):
+        return True
+    if re.search(r"\b(?:remote|login)\s+(?:to|into)\b", lowered):
+        return True
+    if re.search(r"\bconnect\s+(?:to|into)\b", lowered):
+        return True
+    if re.search(r"\b(?:run|execute)\s+(?:the\s+)?command\b", lowered):
+        return True
+    if re.search(r"\bcommand\s+", lowered):
+        return True
+    return False
+
+
+def _has_connectivity_intent(text: str) -> bool:
+    lowered = text.lower()
+    return bool(re.search(r"\b(?:ping|icmp|connectivity|reachable|reachability|rachable)\b", lowered))
+
+
 def parse_direct_skill_request(user_input: str) -> dict | None:
     text = user_input.strip()
     lowered = text.lower()
@@ -225,7 +279,33 @@ def parse_direct_skill_request(user_input: str) -> dict | None:
     generic_hostport_match = GENERIC_HOST_WITH_PORT_PATTERN.search(text)
     ip_match = IP_PATTERN.search(text)
     ssh_host, ssh_inline_user = _extract_ssh_target(text)
-    if (ip_match or ssh_host or generic_hostport_match) and any(hint in lowered for hint in SSH_HINTS):
+
+    cidr_match = CIDR_PATTERN.search(text)
+    if cidr_match and (text == cidr_match.group(0) or any(hint in lowered for hint in DIRECT_SCAN_HINTS)):
+        ports_match = PORTS_PATTERN.search(text)
+        first_ports_match = FIRST_PORTS_PATTERN.search(text)
+        ping_only = any(hint in lowered for hint in PING_ONLY_HINTS) and not ports_match and not first_ports_match
+        if ping_only:
+            ports = None
+        elif first_ports_match:
+            ports = f"1-{int(first_ports_match.group(1))}"
+        elif ports_match:
+            ports = ports_match.group(1).replace(" ", "")
+        else:
+            ports = "profile" if scan_profile else "22,80,443"
+        args = {"cidr": cidr_match.group(0), "ports": ports}
+        if scanner:
+            args["scanner"] = scanner
+        if scan_profile:
+            args["scan_profile"] = scan_profile
+        if service_detection:
+            args["service_detection"] = service_detection
+        return {"skill": "discover_network_hosts", "args": args}
+
+    if ip_match and _has_connectivity_intent(text):
+        return {"skill": "check_device_connectivity", "args": {"host": ip_match.group(0)}}
+
+    if (ip_match or ssh_host or generic_hostport_match) and _has_ssh_intent(text):
         user_match = SSH_USER_PATTERN.search(text)
         user_after_name_match = SSH_USER_AFTER_NAME_PATTERN.search(text)
         port_match = SSH_PORT_PATTERN.search(text)
@@ -257,28 +337,6 @@ def parse_direct_skill_request(user_input: str) -> dict | None:
             },
         }
 
-    cidr_match = CIDR_PATTERN.search(text)
-    if cidr_match and (text == cidr_match.group(0) or any(hint in lowered for hint in DIRECT_SCAN_HINTS)):
-        ports_match = PORTS_PATTERN.search(text)
-        first_ports_match = FIRST_PORTS_PATTERN.search(text)
-        ping_only = any(hint in lowered for hint in PING_ONLY_HINTS) and not ports_match and not first_ports_match
-        if ping_only:
-            ports = None
-        elif first_ports_match:
-            ports = f"1-{int(first_ports_match.group(1))}"
-        elif ports_match:
-            ports = ports_match.group(1).replace(" ", "")
-        else:
-            ports = "profile" if scan_profile else "22,80,443"
-        args = {"cidr": cidr_match.group(0), "ports": ports}
-        if scanner:
-            args["scanner"] = scanner
-        if scan_profile:
-            args["scan_profile"] = scan_profile
-        if service_detection:
-            args["service_detection"] = service_detection
-        return {"skill": "discover_network_hosts", "args": args}
-
     ip_match = IP_PATTERN.search(text)
     port_scan_host = _extract_hostname_candidate(
         text,
@@ -309,13 +367,18 @@ def parse_direct_skill_request(user_input: str) -> dict | None:
         (
             r"\bcheck\s+([a-zA-Z0-9][a-zA-Z0-9._-]*)\b",
             r"\bping\s+([a-zA-Z0-9][a-zA-Z0-9._-]*)\b",
-            r"^\s*([a-zA-Z0-9][a-zA-Z0-9._-]*)\s*$",
         ),
     )
+    bare_host = None
+    if not direct_host:
+        bare_match = re.match(r"^\s*([a-zA-Z0-9][a-zA-Z0-9._-]*)\s*$", text)
+        if bare_match and _looks_like_bare_host(bare_match.group(1)):
+            bare_host = bare_match.group(1)
+            direct_host = bare_host
     if direct_host and (
-        text == direct_host
+        (bare_host is not None and text == direct_host)
         or any(hint in lowered for hint in DIRECT_HOST_HINTS)
-        or not any(hint in lowered for hint in SSH_HINTS + DIRECT_SCAN_HINTS)
+        or not (_has_ssh_intent(text) or any(hint in lowered for hint in DIRECT_SCAN_HINTS))
     ):
         return {"skill": "check_device_connectivity", "args": {"host": direct_host}}
 
@@ -344,7 +407,7 @@ def detect_ambiguous_follow_up(user_input: str) -> dict | None:
             "question": "Which subnet should I scan? Give me a CIDR like 192.168.1.0/24.",
         }
 
-    if any(hint in lowered for hint in SSH_HINTS):
+    if _has_ssh_intent(text):
         user_match = SSH_USER_PATTERN.search(text)
         user_after_name_match = SSH_USER_AFTER_NAME_PATTERN.search(text)
         if not user_match and not user_after_name_match:
@@ -367,7 +430,7 @@ def detect_ambiguous_follow_up(user_input: str) -> dict | None:
 
     if (
         any(hint in lowered for hint in DIRECT_HOST_HINTS)
-        and not any(hint in lowered for hint in SSH_HINTS)
+        and not _has_ssh_intent(text)
         and not IP_PATTERN.search(text)
         and not CIDR_PATTERN.search(text)
     ):
@@ -378,7 +441,7 @@ def detect_ambiguous_follow_up(user_input: str) -> dict | None:
             "question": "Which host should I check? Give me an IP or hostname.",
         }
 
-    if any(hint in lowered for hint in SSH_HINTS) and not IP_PATTERN.search(text):
+    if _has_ssh_intent(text) and not IP_PATTERN.search(text):
         return {
             "skill": "run_remote_ssh_diagnostic",
             "args": {},
@@ -473,3 +536,18 @@ def complete_follow_up(pending: dict, user_input: str) -> dict | None:
 def is_session_info_request(user_input: str) -> bool:
     lowered = user_input.strip().lower()
     return any(hint in lowered for hint in SESSION_INFO_HINTS)
+
+
+def is_scan_memory_request(user_input: str) -> bool:
+    lowered = user_input.strip().lower()
+    return any(hint in lowered for hint in SCAN_MEMORY_HINTS)
+
+
+def is_identity_request(user_input: str) -> bool:
+    lowered = user_input.strip().lower().strip("?.! ")
+    return any(hint in lowered for hint in IDENTITY_HINTS)
+
+
+def is_casual_greeting(user_input: str) -> bool:
+    lowered = user_input.strip().lower().strip("!. ")
+    return lowered in CASUAL_GREETINGS

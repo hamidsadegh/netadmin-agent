@@ -3,10 +3,15 @@ from main import (
     extract_explicit_ssh_command,
     extract_json,
     format_active_session_status,
+    format_identity_response,
     format_playbook_result,
     format_result_for_fallback,
+    format_scan_memory,
     get_history_file,
     get_skill_status_message,
+    is_casual_greeting,
+    is_identity_request,
+    is_scan_memory_request,
     is_session_info_request,
     maybe_run_cisco_playbook,
     normalize_skill_call,
@@ -68,8 +73,44 @@ def test_parse_direct_skill_request_detects_direct_host_check():
     }
 
 
+def test_parse_direct_skill_request_treats_connectivity_as_ping_check_not_ssh():
+    parsed = parse_direct_skill_request("check ping device connectivity 192.168.178.49")
+    assert parsed == {
+        "skill": "check_device_connectivity",
+        "args": {"host": "192.168.178.49"},
+    }
+
+
+def test_parse_direct_skill_request_ping_and_ssh_uses_connectivity_check():
+    parsed = parse_direct_skill_request("check device connectivity 192.168.178.49 ping ssh")
+    assert parsed == {
+        "skill": "check_device_connectivity",
+        "args": {"host": "192.168.178.49"},
+    }
+
+
+def test_parse_direct_skill_request_explicit_ssh_still_routes_to_ssh():
+    parsed = parse_direct_skill_request("ssh to 192.168.178.49")
+    assert parsed["skill"] == "run_remote_ssh_diagnostic"
+    assert parsed["args"]["host"] == "192.168.178.49"
+    assert parsed["args"]["user"] is None
+
+
 def test_parse_direct_skill_request_detects_direct_hostname_check():
     parsed = parse_direct_skill_request("check edge-fw01")
+    assert parsed == {
+        "skill": "check_device_connectivity",
+        "args": {"host": "edge-fw01"},
+    }
+
+
+def test_parse_direct_skill_request_ignores_casual_greeting():
+    assert parse_direct_skill_request("hi") is None
+    assert is_casual_greeting("hi") is True
+
+
+def test_parse_direct_skill_request_accepts_host_like_bare_token():
+    parsed = parse_direct_skill_request("edge-fw01")
     assert parsed == {
         "skill": "check_device_connectivity",
         "args": {"host": "edge-fw01"},
@@ -210,6 +251,36 @@ def test_format_result_for_fallback_summarizes_network_scan():
     assert "permission denied" in text
     assert "Recommended next step:" in text
     assert "elevated privileges" in text
+
+
+def test_format_scan_memory_lists_all_hosts_from_last_scan():
+    text = format_scan_memory(
+        {
+            "skill": "discover_network_hosts",
+            "cidr": "192.168.178.0/24",
+            "ports": "22,80,443",
+            "hosts": {
+                "192.168.178.49": {
+                    "hostname": "homeassistant.fritz.box",
+                    "alive_icmp": True,
+                    "ports": [{"port": 22, "service": "ssh"}],
+                },
+                "192.168.178.67": {
+                    "hostname": "fox",
+                    "alive_icmp": True,
+                    "ports": [{"port": 22, "service": "ssh"}, {"port": 80, "service": "http"}],
+                },
+            },
+        }
+    )
+
+    assert "Last Scan Hosts: 192.168.178.0/24" in text
+    assert "- 192.168.178.49 (homeassistant.fritz.box): alive; 22/ssh" in text
+    assert "- 192.168.178.67 (fox): alive; 22/ssh, 80/http" in text
+
+
+def test_format_scan_memory_handles_missing_scan():
+    assert "No scan results" in format_scan_memory(None)
 
 
 def test_format_result_for_fallback_recommends_interface_fix_when_init_fails():
@@ -378,13 +449,16 @@ def test_format_playbook_result_contains_summary_and_matches():
             "host": "10.0.0.10",
             "user": "admin",
             "platform_key": "cisco_ios",
+            "mac": "0011.2233.4455",
             "summary": "Found 1 matching MAC table entry.",
-            "matches": [{"mac": "0011.2233.4455", "port": "Gi1/0/1"}],
+            "matches": [{"mac": "0011.2233.4455", "port": "Gi1/0/1", "vlan": "10", "type": "DYNAMIC"}],
         }
     )
-    assert "Playbook: cisco_mac_lookup_playbook" in text
+    assert "MAC Lookup: 0011.2233.4455" in text
     assert "Platform: cisco_ios" in text
-    assert "Found 1 matching MAC table entry." in text
+    assert "- Entries: 1" in text
+    assert "VLAN 10 0011.2233.4455 DYNAMIC on Gi1/0/1" in text
+    assert "Matches:" not in text
 
 
 def test_format_interface_down_playbook_is_human_friendly_without_json():
@@ -594,10 +668,53 @@ def test_format_interface_down_playbook_reports_missing_interface():
 
 def test_is_session_info_request_matches_helpful_phrases():
     assert is_session_info_request("session info") is True
-    assert is_session_info_request("what can you do here?") is True
+    assert is_identity_request("what can you do here?") is True
+    assert is_identity_request("who are you?") is True
+    assert is_identity_request("how can you help me?") is True
     assert is_session_info_request("What I can on this paltform?") is True
     assert is_session_info_request("examples") is True
     assert is_session_info_request("check 192.168.178.49") is False
+
+
+def test_is_scan_memory_request_matches_scanned_host_phrases():
+    assert is_scan_memory_request("list all hosts") is True
+    assert is_scan_memory_request("list all scaned hosts") is True
+    assert is_scan_memory_request("show last scan") is True
+    assert is_scan_memory_request("check 192.168.178.49") is False
+
+
+def test_format_identity_response_lists_capabilities_and_examples():
+    text = format_identity_response()
+
+    assert "NetAdmin Agent Identity" in text
+    assert "read-only diagnostics" in text
+    assert "Capabilities:" in text
+    assert "- Check one host for ICMP reachability" in text
+    assert "- Connect over SSH and run safe read-only diagnostics." in text
+    assert "- Start a local Cisco SSH simulator backend" in text
+    assert "Examples:" in text
+    assert "`check 192.168.178.49`" in text
+    assert "`python main.py --simulator nxos --ssh-request \"show vpc\"`" in text
+
+
+def test_run_agent_answers_identity_question_without_diagnostics(monkeypatch):
+    outputs = []
+    cli_app.PENDING_FOLLOW_UP = None
+    cli_app.ACTIVE_SSH_SESSION = None
+
+    monkeypatch.setattr(cli_app, "print", lambda *args, **kwargs: outputs.append(" ".join(str(a) for a in args)))
+    monkeypatch.setattr(cli_app, "print_paged", lambda text, **_kwargs: outputs.append(text))
+    monkeypatch.setattr(
+        cli_app,
+        "execute_skill",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("identity should not run a skill")),
+    )
+
+    cli_app.run_agent("who are you?")
+
+    assert outputs
+    assert "NetAdmin Agent Identity" in outputs[-1]
+    assert "Capabilities:" in outputs[-1]
 
 
 def test_format_active_session_status_includes_platform_intents_and_examples():
@@ -702,6 +819,62 @@ def test_run_agent_routes_unparsed_input_to_active_ssh_session(monkeypatch):
     assert outputs[-1] != "Which host should I connect to over SSH? Give me an IP or hostname."
 
 
+def test_run_agent_remembers_last_scan_and_lists_hosts(monkeypatch):
+    outputs = []
+    cli_app.PENDING_FOLLOW_UP = None
+    cli_app.ACTIVE_SSH_SESSION = None
+    cli_app.LAST_SCAN_RESULT = None
+
+    scan_result = {
+        "skill": "discover_network_hosts",
+        "cidr": "192.168.178.0/24",
+        "ports": "22,80,443",
+        "hosts": {
+            "192.168.178.49": {
+                "hostname": "homeassistant.fritz.box",
+                "alive_icmp": True,
+                "ports": [{"port": 22, "service": "ssh"}],
+            }
+        },
+        "host_count": 1,
+        "status": "ok",
+        "checks": {"compare": {"new_hosts": [], "disappeared_hosts": [], "changed_hosts": []}},
+    }
+
+    def fake_run_with_status(_message, func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    def fake_execute_skill(skill_name, args):
+        assert skill_name == "discover_network_hosts"
+        return scan_result
+
+    monkeypatch.setattr(cli_app, "print", lambda *args, **kwargs: outputs.append(" ".join(str(a) for a in args)))
+    monkeypatch.setattr(cli_app, "run_with_status", fake_run_with_status)
+    monkeypatch.setattr(cli_app, "execute_skill", fake_execute_skill)
+    monkeypatch.setattr(cli_app, "explain_skill_result", lambda *_args, **_kwargs: "scan summary")
+
+    cli_app.run_agent("scan 192.168.178.0/24")
+    cli_app.run_agent("list all scaned hosts")
+
+    assert cli_app.LAST_SCAN_RESULT == scan_result
+    assert "scan summary" in outputs[0]
+    assert "Last Scan Hosts: 192.168.178.0/24" in outputs[-1]
+    assert "192.168.178.49 (homeassistant.fritz.box)" in outputs[-1]
+
+
+def test_run_agent_list_hosts_without_scan_uses_memory_message(monkeypatch):
+    outputs = []
+    cli_app.PENDING_FOLLOW_UP = None
+    cli_app.ACTIVE_SSH_SESSION = None
+    cli_app.LAST_SCAN_RESULT = None
+
+    monkeypatch.setattr(cli_app, "print", lambda *args, **kwargs: outputs.append(" ".join(str(a) for a in args)))
+
+    cli_app.run_agent("list all hosts")
+
+    assert "No scan results in this session yet" in outputs[-1]
+
+
 def test_print_paged_prompts_for_long_output(monkeypatch):
     outputs = []
     writes = []
@@ -792,6 +965,86 @@ def test_setup_and_save_interactive_history(monkeypatch, tmp_path):
     assert ("read", str(history_file)) in calls
     assert ("length", 500) in calls
     assert ("write", str(history_file)) in calls
+
+
+def test_exit_closes_active_ssh_session_without_quitting(monkeypatch):
+    class FakeClient:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    client = FakeClient()
+    printed = []
+    monkeypatch.setattr(cli_app, "ACTIVE_SSH_SESSION", {"client": client})
+    monkeypatch.setattr(cli_app, "ACTIVE_INTERACTIVE_MODE", "ssh")
+    monkeypatch.setattr(cli_app, "print_paged", lambda message, force=False: printed.append(message))
+
+    action = cli_app.handle_interactive_control_command("exit")
+
+    assert action == "handled"
+    assert client.closed is True
+    assert cli_app.ACTIVE_SSH_SESSION is None
+    assert cli_app.ACTIVE_INTERACTIVE_MODE == "agent"
+    assert printed == ["SSH session closed.\n------------------------------------------------------------------------"]
+
+
+def test_exit_quits_agent_when_no_active_ssh_session(monkeypatch):
+    monkeypatch.setattr(cli_app, "ACTIVE_SSH_SESSION", None)
+
+    assert cli_app.handle_interactive_control_command("exit") == "quit"
+
+
+def test_ssh_mode_switch_requires_active_session(monkeypatch):
+    printed = []
+    monkeypatch.setattr(cli_app, "ACTIVE_SSH_SESSION", None)
+    monkeypatch.setattr(cli_app, "ACTIVE_INTERACTIVE_MODE", "agent")
+    monkeypatch.setattr(cli_app, "print_paged", lambda message, force=False: printed.append(message))
+
+    action = cli_app.handle_interactive_control_command("ssh mode")
+
+    assert action == "handled"
+    assert cli_app.ACTIVE_INTERACTIVE_MODE == "agent"
+    assert "No active SSH session" in printed[-1]
+
+
+def test_ssh_mode_switch_and_agent_mode_switch(monkeypatch):
+    printed = []
+    monkeypatch.setattr(cli_app, "ACTIVE_SSH_SESSION", {"client": object()})
+    monkeypatch.setattr(cli_app, "ACTIVE_INTERACTIVE_MODE", "agent")
+    monkeypatch.setattr(cli_app, "print_paged", lambda message, force=False: printed.append(message))
+
+    assert cli_app.handle_interactive_control_command("ssh mode") == "handled"
+    assert cli_app.ACTIVE_INTERACTIVE_MODE == "ssh"
+    assert cli_app.handle_interactive_control_command("agent mode") == "handled"
+    assert cli_app.ACTIVE_INTERACTIVE_MODE == "agent"
+    assert "SSH mode enabled" in printed[0]
+    assert "Agent mode enabled" in printed[1]
+
+
+def test_run_agent_ssh_mode_prints_raw_stdout_without_separator(monkeypatch):
+    writes = []
+    calls = []
+    monkeypatch.setattr(
+        cli_app,
+        "ACTIVE_SSH_SESSION",
+        {"client": object(), "host": "127.0.0.1", "port": 2222, "user": "admin", "platform_key": "cisco_ios_xe"},
+    )
+    monkeypatch.setattr(cli_app, "ACTIVE_INTERACTIVE_MODE", "ssh")
+    monkeypatch.setattr(cli_app.sys.stdout, "write", lambda text: writes.append(text))
+    monkeypatch.setattr(cli_app.sys.stdout, "flush", lambda: None)
+
+    def fake_raw(client, **kwargs):
+        calls.append({"client": client, **kwargs})
+        return {"stdout": "Cisco IOS XE Software\n", "stderr": ""}
+
+    monkeypatch.setattr(cli_app, "run_raw_command_on_ssh_session", fake_raw)
+
+    cli_app.run_agent("show version")
+
+    assert calls[0]["command"] == "show version"
+    assert writes == ["Cisco IOS XE Software\n"]
 
 
 def test_run_with_status_uses_console_status(monkeypatch):

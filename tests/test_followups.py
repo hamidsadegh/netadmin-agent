@@ -169,7 +169,8 @@ def test_run_agent_keeps_pending_follow_up_until_answered(monkeypatch):
     monkeypatch.setattr(cli_app, "print", lambda *args, **kwargs: outputs.append(" ".join(str(a) for a in args)))
 
     cli_app.run_agent("scan the subnet")
-    assert outputs[-1] == "Which subnet should I scan? Give me a CIDR like 192.168.1.0/24."
+    assert "Which subnet should I scan? Give me a CIDR like 192.168.1.0/24." in outputs[-1]
+    assert outputs[-1].strip().endswith(cli_app.ANSWER_SEPARATOR)
     assert cli_app.PENDING_FOLLOW_UP is not None
 
     monkeypatch.setattr(cli_app, "execute_skill", lambda skill, args: {"skill": skill, "cidr": args["cidr"], "ports": args["ports"], "status": "ok", "host_count": 0, "hosts": {}, "checks": {}})
@@ -177,5 +178,6 @@ def test_run_agent_keeps_pending_follow_up_until_answered(monkeypatch):
     monkeypatch.setattr(cli_app, "explain_skill_result", lambda user_input, result: f"done {result['cidr']} {result['ports']}")
 
     cli_app.run_agent("192.168.1.0/24")
-    assert outputs[-1] == "done 192.168.1.0/24 22,80,443"
+    assert "done 192.168.1.0/24 22,80,443" in outputs[-1]
+    assert outputs[-1].strip().endswith(cli_app.ANSWER_SEPARATOR)
     assert cli_app.PENDING_FOLLOW_UP is None
